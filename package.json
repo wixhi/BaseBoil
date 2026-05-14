@@ -2,6 +2,7 @@
   "name": "baseboil",
   "version": "1.0.0",
   "description": "Baseball meets StarCraft - a browser-based RTS game",
+  "type": "module",
   "main": "index.html",
   "scripts": {
     "start": "npx serve .",
