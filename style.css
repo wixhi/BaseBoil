@@ -1,0 +1,35 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #0a0a0f;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  font-family: 'Courier New', Courier, monospace;
+  overflow: hidden;
+}
+
+#game-container {
+  position: relative;
+  width: 1200px;
+  height: 720px;
+  box-shadow: 0 0 40px rgba(255, 152, 0, 0.3), 0 0 80px rgba(255, 152, 0, 0.1);
+  border: 2px solid #ff9800;
+}
+
+#gameCanvas {
+  display: block;
+  width: 1200px;
+  height: 720px;
+  cursor: default;
+  image-rendering: pixelated;
+}
+
+#gameCanvas.crosshair {
+  cursor: crosshair;
+}

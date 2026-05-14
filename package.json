@@ -1,0 +1,16 @@
+{
+  "name": "baseboil",
+  "version": "1.0.0",
+  "description": "Baseball meets StarCraft - a browser-based RTS game",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve .",
+    "serve": "npx serve ."
+  },
+  "keywords": ["game", "rts", "baseball"],
+  "author": "BaseBoil",
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^14.0.0"
+  }
+}
