@@ -1,0 +1,1706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BaseBoil - Baseball RTS</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: 'Courier New', Courier, monospace;
+      overflow: hidden;
+    }
+    #game-container {
+      position: relative;
+      width: 1200px;
+      height: 720px;
+      box-shadow: 0 0 40px rgba(255,152,0,0.3), 0 0 80px rgba(255,152,0,0.1);
+      border: 2px solid #ff9800;
+    }
+    #gameCanvas {
+      display: block;
+      width: 1200px;
+      height: 720px;
+      cursor: default;
+      image-rendering: pixelated;
+    }
+    #gameCanvas.crosshair { cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="gameCanvas"></canvas>
+  </div>
+<script>
+// ─── constants.js ───────────────────────────────────────────────────────────
+const CANVAS_WIDTH = 1200;
+const CANVAS_HEIGHT = 720;
+const VIEWPORT_HEIGHT = 600;
+const HUD_HEIGHT = 120;
+const TILE = 32;
+const MAP_COLS = 64;
+const MAP_ROWS = 48;
+
+const TILE_TYPE = { GRASS: 0, DIRT: 1, OBSTACLE: 2, RESOURCE: 3 };
+const TEAM = { PLAYER: 0, ENEMY: 1 };
+const STATE = {
+  IDLE: 'IDLE', MOVING: 'MOVING', ATTACKING: 'ATTACKING',
+  HARVESTING: 'HARVESTING', RETURNING: 'RETURNING', BUILDING: 'BUILDING', DEAD: 'DEAD'
+};
+const UNIT = {
+  GROUNDSKEEPER: 'GROUNDSKEEPER', BATTER: 'BATTER',
+  PITCHER: 'PITCHER', CATCHER: 'CATCHER', SLUGGER: 'SLUGGER'
+};
+const BLDG = {
+  DUGOUT: 'DUGOUT', BATTING_CAGE: 'BATTING_CAGE',
+  BULLPEN: 'BULLPEN', BLEACHERS: 'BLEACHERS'
+};
+const COLORS = {
+  HUD_BG: '#111827', HUD_BORDER: '#1f2937',
+  BUTTON_BG: '#1f2937', BUTTON_HOVER: '#374151',
+  BUTTON_DISABLED: '#111827', BUTTON_BORDER: '#374151',
+  GRASS: '#2d5a27', GRASS_GRID: '#1e3d1a',
+  DIRT: '#8B6914', OBSTACLE: '#3c3c3c', OBSTACLE_BORDER: '#222222',
+  RESOURCE_BASE: '#2d5a27', RESOURCE_DOT: '#ffd700',
+  PLAYER_BODY: '#1565c0', PLAYER_STROKE: '#4fc3f7', PLAYER_GK: '#90caf9',
+  ENEMY_BODY: '#b71c1c', ENEMY_STROKE: '#ef5350', ENEMY_GK: '#ef9a9a',
+  PLAYER_BLDG_FILL: '#0d47a1', PLAYER_BLDG_STROKE: '#4fc3f7',
+  ENEMY_BLDG_FILL: '#7f0000', ENEMY_BLDG_STROKE: '#ef5350',
+  ORANGE: '#ff9800', FIRE: '#ff6b35', CYAN: '#4fc3f7',
+  GOLD: '#ffd700', WHITE: '#ffffff', RED: '#ef5350',
+  GREEN: '#4caf50', YELLOW: '#ffeb3b',
+  BASEBALL_FILL: '#ffffff', BASEBALL_GLOW: '#ff9800', TRAIL: '#ff6b35',
+  SELECTION_FILL: 'rgba(79,195,247,0.15)', SELECTION_STROKE: '#4fc3f7',
+  HP_HIGH: '#4caf50', HP_MID: '#ffeb3b', HP_LOW: '#ef5350', HP_BG: '#1a1a1a',
+  OVERLAY_BG: 'rgba(10,10,15,0.88)', VICTORY: '#ffd700', DEFEAT: '#ef5350',
+  TITLE_ORANGE: '#ff9800', TITLE_FIRE: '#ff6b35'
+};
+const CAM_SPEED = 400;
+const POP_CAP = 20;
+const START_BASEBALLS = 200;
+const INNING_DURATION = 60;
+const MAX_INNINGS = 9;
+
+// ─── defs.js ─────────────────────────────────────────────────────────────────
+const UNIT_DEF = {
+  [UNIT.GROUNDSKEEPER]: {
+    label:'GK', name:'Groundskeeper', hp:40, speed:70, damage:4, range:32,
+    attackSpeed:1.0, isWorker:true, harvestRate:10, carryMax:15, cost:50,
+    trainTime:12, radius:10, isRanged:false, projectileSpeed:0,
+    playerColor:'#90caf9', enemyColor:'#ef9a9a'
+  },
+  [UNIT.BATTER]: {
+    label:'B', name:'Batter', hp:90, speed:68, damage:22, range:38,
+    attackSpeed:0.9, isWorker:false, harvestRate:0, carryMax:0, cost:75,
+    trainTime:15, radius:11, isRanged:false, projectileSpeed:0,
+    playerColor:'#4fc3f7', enemyColor:'#ef5350'
+  },
+  [UNIT.PITCHER]: {
+    label:'P', name:'Pitcher', hp:55, speed:60, damage:14, range:170,
+    attackSpeed:0.75, isWorker:false, harvestRate:0, carryMax:0, cost:100,
+    trainTime:18, radius:10, isRanged:true, projectileSpeed:280,
+    playerColor:'#4fc3f7', enemyColor:'#ef5350'
+  },
+  [UNIT.CATCHER]: {
+    label:'C', name:'Catcher', hp:180, speed:48, damage:12, range:36,
+    attackSpeed:0.65, isWorker:false, harvestRate:0, carryMax:0, cost:125,
+    trainTime:22, radius:13, isRanged:false, projectileSpeed:0,
+    playerColor:'#4fc3f7', enemyColor:'#ef5350'
+  },
+  [UNIT.SLUGGER]: {
+    label:'S', name:'Slugger', hp:130, speed:55, damage:40, range:40,
+    attackSpeed:0.45, isWorker:false, harvestRate:0, carryMax:0, cost:150,
+    trainTime:25, radius:12, isRanged:false, projectileSpeed:0,
+    playerColor:'#4fc3f7', enemyColor:'#ef5350'
+  }
+};
+const BLDG_DEF = {
+  [BLDG.DUGOUT]: {
+    name:'Dugout', label:'DUG', hp:1000, isMain:true, cost:0, buildTime:0,
+    tileW:3, tileH:3, trainable:[UNIT.GROUNDSKEEPER],
+    isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false
+  },
+  [BLDG.BATTING_CAGE]: {
+    name:'Batting Cage', label:'BC', hp:450, isMain:false, cost:150, buildTime:20,
+    tileW:2, tileH:2, trainable:[UNIT.BATTER, UNIT.CATCHER],
+    isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false
+  },
+  [BLDG.BULLPEN]: {
+    name:'Bullpen', label:'BP', hp:450, isMain:false, cost:175, buildTime:20,
+    tileW:2, tileH:2, trainable:[UNIT.PITCHER, UNIT.SLUGGER],
+    isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false
+  },
+  [BLDG.BLEACHERS]: {
+    name:'Bleachers', label:'BL', hp:350, isMain:false, cost:125, buildTime:15,
+    tileW:2, tileH:2, trainable:[],
+    isAttacker:true, attackDamage:15, attackRange:220, attackSpeed:0.6, isRanged:true
+  }
+};
+
+// ─── utils.js ────────────────────────────────────────────────────────────────
+let _idCounter = 0;
+function genId() { return ++_idCounter; }
+
+function dist(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.sqrt(dx*dx + dy*dy);
+}
+function dist2(ax, ay, bx, by) {
+  const dx = ax-bx, dy = ay-by;
+  return Math.sqrt(dx*dx + dy*dy);
+}
+function norm(dx, dy) {
+  const len = Math.sqrt(dx*dx + dy*dy);
+  if (len === 0) return {x:0, y:0};
+  return {x: dx/len, y: dy/len};
+}
+function lerp(a, b, t) { return a + (b-a)*t; }
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function tileToWorld(tx, ty) { return {x: tx*TILE + TILE/2, y: ty*TILE + TILE/2}; }
+function worldToTile(wx, wy) { return {tx: Math.floor(wx/TILE), ty: Math.floor(wy/TILE)}; }
+
+function astar(start, goal, isBlocked) {
+  const key = t => `${t.tx},${t.ty}`;
+  if (start.tx === goal.tx && start.ty === goal.ty) return [goal];
+  if (isBlocked(goal.tx, goal.ty)) {
+    const adj = [
+      {tx:goal.tx-1,ty:goal.ty},{tx:goal.tx+1,ty:goal.ty},
+      {tx:goal.tx,ty:goal.ty-1},{tx:goal.tx,ty:goal.ty+1},
+      {tx:goal.tx-1,ty:goal.ty-1},{tx:goal.tx+1,ty:goal.ty-1},
+      {tx:goal.tx-1,ty:goal.ty+1},{tx:goal.tx+1,ty:goal.ty+1}
+    ];
+    let found = null;
+    for (const a of adj) {
+      if (a.tx>=0 && a.tx<MAP_COLS && a.ty>=0 && a.ty<MAP_ROWS && !isBlocked(a.tx,a.ty)) {
+        found = a; break;
+      }
+    }
+    if (!found) return [goal];
+    goal = found;
+  }
+  const heuristic = t => Math.abs(t.tx-goal.tx) + Math.abs(t.ty-goal.ty);
+  const openSet = [];
+  const cameFrom = {}, gScore = {}, fScore = {};
+  const startKey = key(start);
+  gScore[startKey] = 0;
+  fScore[startKey] = heuristic(start);
+  openSet.push({tile:start, f:fScore[startKey]});
+  const closedSet = new Set();
+  const neighbors = t => {
+    const result = [];
+    const dirs = [
+      {tx:t.tx-1,ty:t.ty},{tx:t.tx+1,ty:t.ty},
+      {tx:t.tx,ty:t.ty-1},{tx:t.tx,ty:t.ty+1},
+      {tx:t.tx-1,ty:t.ty-1},{tx:t.tx+1,ty:t.ty-1},
+      {tx:t.tx-1,ty:t.ty+1},{tx:t.tx+1,ty:t.ty+1}
+    ];
+    for (const d of dirs) {
+      if (d.tx<0||d.tx>=MAP_COLS||d.ty<0||d.ty>=MAP_ROWS) continue;
+      if (isBlocked(d.tx,d.ty)) continue;
+      if (d.tx!==t.tx && d.ty!==t.ty) {
+        if (isBlocked(d.tx,t.ty) || isBlocked(t.tx,d.ty)) continue;
+      }
+      result.push(d);
+    }
+    return result;
+  };
+  let iterations = 0;
+  const MAX_ITER = 2000;
+  while (openSet.length > 0 && iterations < MAX_ITER) {
+    iterations++;
+    openSet.sort((a,b) => a.f - b.f);
+    const current = openSet.shift().tile;
+    const currentKey = key(current);
+    if (current.tx === goal.tx && current.ty === goal.ty) {
+      const path = [];
+      let cur = currentKey;
+      while (cur) {
+        const [tx,ty] = cur.split(',').map(Number);
+        path.unshift({tx,ty});
+        cur = cameFrom[cur];
+      }
+      return path;
+    }
+    closedSet.add(currentKey);
+    for (const neighbor of neighbors(current)) {
+      const neighborKey = key(neighbor);
+      if (closedSet.has(neighborKey)) continue;
+      const isDiag = neighbor.tx !== current.tx && neighbor.ty !== current.ty;
+      const moveCost = isDiag ? 1.414 : 1;
+      const tentativeG = (gScore[currentKey]||0) + moveCost;
+      if (gScore[neighborKey] === undefined || tentativeG < gScore[neighborKey]) {
+        cameFrom[neighborKey] = currentKey;
+        gScore[neighborKey] = tentativeG;
+        fScore[neighborKey] = tentativeG + heuristic(neighbor);
+        const existingIdx = openSet.findIndex(o => key(o.tile) === neighborKey);
+        if (existingIdx >= 0) openSet[existingIdx].f = fScore[neighborKey];
+        else openSet.push({tile:neighbor, f:fScore[neighborKey]});
+      }
+    }
+  }
+  return [goal];
+}
+
+function rectOverlap(r1, r2) {
+  return r1.x < r2.x+r2.w && r1.x+r1.w > r2.x && r1.y < r2.y+r2.h && r1.y+r1.h > r2.y;
+}
+function pointInRect(px, py, rx, ry, rw, rh) {
+  return px>=rx && px<=rx+rw && py>=ry && py<=ry+rh;
+}
+function drawRoundedRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// ─── map.js ──────────────────────────────────────────────────────────────────
+class GameMap {
+  constructor() {
+    this.tiles = [];
+    this.blocked = [];
+    this.resourceTiles = [];
+    for (let r = 0; r < MAP_ROWS; r++) {
+      this.tiles[r] = new Array(MAP_COLS).fill(TILE_TYPE.GRASS);
+      this.blocked[r] = new Array(MAP_COLS).fill(false);
+    }
+  }
+  isInBounds(tx, ty) { return tx>=0 && tx<MAP_COLS && ty>=0 && ty<MAP_ROWS; }
+  isBlocked(tx, ty) { if (!this.isInBounds(tx,ty)) return true; return this.blocked[ty][tx]; }
+  getTile(tx, ty) { if (!this.isInBounds(tx,ty)) return TILE_TYPE.OBSTACLE; return this.tiles[ty][tx]; }
+  setBlocked(tx, ty, val) { if (this.isInBounds(tx,ty)) this.blocked[ty][tx] = val; }
+  setTile(tx, ty, type) {
+    if (!this.isInBounds(tx,ty)) return;
+    this.tiles[ty][tx] = type;
+    if (type === TILE_TYPE.OBSTACLE) this.blocked[ty][tx] = true;
+  }
+  generate(playerBase, enemyBase) {
+    for (let r = 0; r < MAP_ROWS; r++) {
+      for (let c = 0; c < MAP_COLS; c++) {
+        this.tiles[r][c] = TILE_TYPE.GRASS;
+        this.blocked[r][c] = false;
+      }
+    }
+    const clearRadius = 6;
+    const clearZones = [playerBase, enemyBase];
+    const nearBase = (tx, ty) => {
+      for (const base of clearZones) {
+        const dx = tx-base.tx, dy = ty-base.ty;
+        if (Math.sqrt(dx*dx+dy*dy) < clearRadius) return true;
+      }
+      return false;
+    };
+    let placed = 0, attempts = 0;
+    while (placed < 18 && attempts < 500) {
+      attempts++;
+      const cx = 5+Math.floor(Math.random()*(MAP_COLS-10));
+      const cy = 5+Math.floor(Math.random()*(MAP_ROWS-10));
+      if (nearBase(cx,cy)) continue;
+      const clusterSize = 3+Math.floor(Math.random()*5);
+      for (let i = 0; i < clusterSize; i++) {
+        const tx = cx+Math.floor(Math.random()*5)-2;
+        const ty = cy+Math.floor(Math.random()*5)-2;
+        if (this.isInBounds(tx,ty) && !nearBase(tx,ty)) this.setTile(tx,ty,TILE_TYPE.OBSTACLE);
+      }
+      placed++;
+    }
+    this.resourceTiles = [];
+    placed = 0; attempts = 0;
+    while (placed < 12 && attempts < 500) {
+      attempts++;
+      const cx = 4+Math.floor(Math.random()*(MAP_COLS-8));
+      const cy = 4+Math.floor(Math.random()*(MAP_ROWS-8));
+      if (nearBase(cx,cy)) continue;
+      if (this.getTile(cx,cy) === TILE_TYPE.OBSTACLE) continue;
+      const clusterSize = 4+Math.floor(Math.random()*5);
+      let clusterPlaced = 0;
+      for (let i = 0; i < clusterSize*3 && clusterPlaced < clusterSize; i++) {
+        const tx = cx+Math.floor(Math.random()*5)-2;
+        const ty = cy+Math.floor(Math.random()*5)-2;
+        if (this.isInBounds(tx,ty) && !nearBase(tx,ty) && this.getTile(tx,ty)===TILE_TYPE.GRASS) {
+          this.setTile(tx,ty,TILE_TYPE.RESOURCE);
+          this.resourceTiles.push({tx,ty});
+          clusterPlaced++;
+        }
+      }
+      if (clusterPlaced > 0) placed++;
+    }
+    const cx = Math.floor(MAP_COLS/2), cy = Math.floor(MAP_ROWS/2);
+    const diamondRadius = 5;
+    const bases = [
+      {tx:cx, ty:cy-diamondRadius}, {tx:cx+diamondRadius, ty:cy},
+      {tx:cx, ty:cy+diamondRadius}, {tx:cx-diamondRadius, ty:cy}
+    ];
+    for (let i = 0; i < bases.length; i++) {
+      const a = bases[i], b = bases[(i+1)%bases.length];
+      let x0=a.tx, y0=a.ty;
+      const x1=b.tx, y1=b.ty;
+      const dx=Math.abs(x1-x0), dy=Math.abs(y1-y0);
+      const sx=x0<x1?1:-1, sy=y0<y1?1:-1;
+      let err=dx-dy;
+      while (true) {
+        if (this.isInBounds(x0,y0) && this.getTile(x0,y0)===TILE_TYPE.GRASS) this.setTile(x0,y0,TILE_TYPE.DIRT);
+        if (x0===x1 && y0===y1) break;
+        const e2=2*err;
+        if (e2>-dy){err-=dy; x0+=sx;}
+        if (e2<dx){err+=dx; y0+=sy;}
+      }
+    }
+    for (let dy2=-1; dy2<=1; dy2++) {
+      for (let dx2=-1; dx2<=1; dx2++) {
+        const tx=cx+dx2, ty2=cy+dy2;
+        if (this.isInBounds(tx,ty2) && this.getTile(tx,ty2)===TILE_TYPE.GRASS) this.setTile(tx,ty2,TILE_TYPE.DIRT);
+      }
+    }
+  }
+  nearestResource(wx, wy) {
+    let best=null, bestDist=Infinity;
+    for (const rt of this.resourceTiles) {
+      const dx=rt.tx*TILE+TILE/2-wx, dy=rt.ty*TILE+TILE/2-wy;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      if (d<bestDist){bestDist=d; best=rt;}
+    }
+    return best;
+  }
+  isAreaClear(tx, ty, tw, th) {
+    for (let r=ty; r<ty+th; r++) {
+      for (let c=tx; c<tx+tw; c++) {
+        if (!this.isInBounds(c,r)) return false;
+        if (this.blocked[r][c]) return false;
+        if (this.tiles[r][c]===TILE_TYPE.OBSTACLE) return false;
+      }
+    }
+    return true;
+  }
+}
+
+// ─── entity.js ───────────────────────────────────────────────────────────────
+class Entity {
+  constructor(x, y, team) {
+    this.id = genId();
+    this.x = x; this.y = y; this.team = team;
+    this.hp = 1; this.maxHp = 1; this.alive = true;
+  }
+  takeDamage(amount, game) {
+    if (!this.alive) return;
+    this.hp -= amount;
+    if (game) game.floatingNumbers.push({x:this.x, y:this.y-16, value:amount, timer:0.8});
+    if (this.hp <= 0) { this.hp = 0; this.alive = false; }
+  }
+  distTo(other) { return dist(this, other); }
+}
+
+class Unit extends Entity {
+  constructor(type, team, x, y) {
+    super(x, y, team);
+    this.type = type;
+    const def = UNIT_DEF[type];
+    this.hp = def.hp; this.maxHp = def.hp;
+    this.speed = def.speed; this.damage = def.damage;
+    this.range = def.range; this.attackSpeed = def.attackSpeed;
+    this.isWorker = def.isWorker; this.harvestRate = def.harvestRate||0;
+    this.carryMax = def.carryMax||0; this.isRanged = def.isRanged;
+    this.projectileSpeed = def.projectileSpeed||0; this.radius = def.radius;
+    this.state = STATE.IDLE; this.target = null;
+    this.movePath = []; this.moveTarget = null;
+    this.attackTimer = 0; this.carryAmt = 0;
+    this.harvestTimer = 0; this.harvestTarget = null;
+    this.depositTarget = null; this.attackMoveTarget = null; this.idleTimer = 0;
+  }
+  update(dt, game) {
+    if (!this.alive) return;
+    this.attackTimer = Math.max(0, this.attackTimer-dt);
+    switch(this.state) {
+      case STATE.IDLE:      this._updateIdle(dt, game); break;
+      case STATE.MOVING:    this._updateMoving(dt, game); break;
+      case STATE.ATTACKING: this._updateAttacking(dt, game); break;
+      case STATE.HARVESTING:this._updateHarvesting(dt, game); break;
+      case STATE.RETURNING: this._updateReturning(dt, game); break;
+    }
+  }
+  _updateIdle(dt, game) {
+    this.idleTimer -= dt;
+    if (this.idleTimer > 0) return;
+    this.idleTimer = 0.3;
+    if (this.isWorker) {
+      if (this.carryAmt < this.carryMax) {
+        const res = game.map.nearestResource(this.x, this.y);
+        if (res) {
+          this.harvestTarget = res;
+          this.state = STATE.HARVESTING;
+          this._pathTo(res.tx*TILE+TILE/2, res.ty*TILE+TILE/2, game);
+          return;
+        }
+      } else {
+        const dugout = game.entities.find(e =>
+          e.alive && e.team===this.team && e instanceof Building && e.type===BLDG.DUGOUT
+        );
+        if (dugout) {
+          this.depositTarget = dugout;
+          this.state = STATE.RETURNING;
+          this._pathTo(dugout.x, dugout.y, game);
+          return;
+        }
+      }
+    }
+    const detectionRange = this.range*2;
+    const enemy = game.getNearestEnemy(this, detectionRange);
+    if (enemy) { this.target = enemy; this.state = STATE.ATTACKING; }
+  }
+  _updateMoving(dt, game) {
+    if (this.attackMoveTarget) {
+      if (!this.attackMoveTarget.alive) {
+        this.attackMoveTarget = null;
+      } else {
+        const d = this.distTo(this.attackMoveTarget);
+        if (d <= this.range + (this.attackMoveTarget.radius||12)) {
+          this.target = this.attackMoveTarget;
+          this.state = STATE.ATTACKING;
+          this.movePath = [];
+          return;
+        }
+      }
+    }
+    if (this.movePath.length === 0) {
+      this.state = STATE.IDLE; this.attackMoveTarget = null; return;
+    }
+    const nextTile = this.movePath[0];
+    const wx = nextTile.tx*TILE+TILE/2, wy = nextTile.ty*TILE+TILE/2;
+    const dx = wx-this.x, dy = wy-this.y;
+    const d = Math.sqrt(dx*dx+dy*dy);
+    if (d < 4) {
+      this.movePath.shift();
+      if (this.movePath.length === 0) { this.state = STATE.IDLE; this.attackMoveTarget = null; }
+      return;
+    }
+    const spd = this.speed*dt;
+    this.x += (dx/d)*spd; this.y += (dy/d)*spd;
+    this._separate(game, 0.3);
+  }
+  _updateAttacking(dt, game) {
+    if (!this.target || !this.target.alive) {
+      this.target = null; this.state = STATE.IDLE; return;
+    }
+    const d = this.distTo(this.target);
+    const r = this.target.radius||12;
+    if (d > this.range+r+16) {
+      this._pathTo(this.target.x, this.target.y, game);
+      this.state = STATE.MOVING; return;
+    }
+    if (this.attackTimer <= 0) {
+      this.attackTimer = 1/this.attackSpeed;
+      if (this.isRanged) {
+        const n = norm(this.target.x-this.x, this.target.y-this.y);
+        game.addProjectile({
+          x:this.x, y:this.y, vx:n.x*this.projectileSpeed, vy:n.y*this.projectileSpeed,
+          damage:this.damage, team:this.team, targetId:this.target.id,
+          speed:this.projectileSpeed, trail:[]
+        });
+      } else {
+        this.target.takeDamage(this.damage, game);
+      }
+    }
+    if (d > this.range+r) {
+      const spd = this.speed*dt;
+      const dx = this.target.x-this.x, dy = this.target.y-this.y;
+      const len = Math.sqrt(dx*dx+dy*dy);
+      this.x += (dx/len)*spd; this.y += (dy/len)*spd;
+    }
+  }
+  _updateHarvesting(dt, game) {
+    if (!this.harvestTarget) { this.state = STATE.IDLE; return; }
+    const tx = this.harvestTarget.tx, ty = this.harvestTarget.ty;
+    if (game.map.getTile(tx, ty) !== TILE_TYPE.RESOURCE) {
+      this.harvestTarget = null; this.state = STATE.IDLE; return;
+    }
+    const wx = tx*TILE+TILE/2, wy = ty*TILE+TILE/2;
+    const d = dist({x:this.x,y:this.y}, {x:wx,y:wy});
+    if (d > TILE*1.5) {
+      if (this.movePath.length === 0) this._pathTo(wx, wy, game);
+      this._followPath(dt, game); return;
+    }
+    this.harvestTimer += dt;
+    if (this.harvestTimer >= 1) {
+      this.harvestTimer -= 1;
+      this.carryAmt += Math.min(this.harvestRate, this.carryMax-this.carryAmt);
+    }
+    if (this.carryAmt >= this.carryMax) {
+      const dugout = game.entities.find(e =>
+        e.alive && e.team===this.team && e instanceof Building && e.type===BLDG.DUGOUT
+      );
+      if (dugout) {
+        this.depositTarget = dugout;
+        this.state = STATE.RETURNING;
+        this._pathTo(dugout.x, dugout.y, game);
+      } else { this.state = STATE.IDLE; }
+    }
+  }
+  _updateReturning(dt, game) {
+    if (!this.depositTarget || !this.depositTarget.alive) {
+      this.depositTarget = null; this.state = STATE.IDLE; return;
+    }
+    const d = this.distTo(this.depositTarget);
+    if (d < 48) {
+      if (this.team === TEAM.PLAYER) game.player.earn(this.carryAmt);
+      else game.ai.baseballs += this.carryAmt;
+      this.carryAmt = 0; this.harvestTarget = null; this.state = STATE.IDLE; return;
+    }
+    if (this.movePath.length === 0) this._pathTo(this.depositTarget.x, this.depositTarget.y, game);
+    this._followPath(dt, game);
+  }
+  _followPath(dt, game) {
+    if (this.movePath.length === 0) return;
+    const nextTile = this.movePath[0];
+    const wx = nextTile.tx*TILE+TILE/2, wy = nextTile.ty*TILE+TILE/2;
+    const dx = wx-this.x, dy = wy-this.y;
+    const d = Math.sqrt(dx*dx+dy*dy);
+    if (d < 4) { this.movePath.shift(); return; }
+    const spd = this.speed*dt;
+    this.x += (dx/d)*spd; this.y += (dy/d)*spd;
+  }
+  _pathTo(wx, wy, game) {
+    const start = worldToTile(this.x, this.y);
+    const goal = worldToTile(wx, wy);
+    this.movePath = astar(start, goal, (tx, ty) => game.map.isBlocked(tx, ty));
+    this.moveTarget = {x:wx, y:wy};
+  }
+  _separate(game, strength) {
+    const minDist = this.radius*2+2;
+    for (const e of game.entities) {
+      if (e===this || !e.alive || !(e instanceof Unit)) continue;
+      const dx = this.x-e.x, dy = this.y-e.y;
+      const d = Math.sqrt(dx*dx+dy*dy);
+      if (d < minDist && d > 0) {
+        const push = (minDist-d)/minDist*strength;
+        this.x += (dx/d)*push; this.y += (dy/d)*push;
+      }
+    }
+  }
+  moveTo(wx, wy, game) {
+    this._pathTo(wx, wy, game);
+    this.state = STATE.MOVING; this.target = null; this.attackMoveTarget = null;
+  }
+  attackTarget(entity) {
+    this.target = entity; this.state = STATE.ATTACKING;
+    this.movePath = []; this.attackMoveTarget = null;
+  }
+  attackMove(entity, game) {
+    this.attackMoveTarget = entity;
+    this._pathTo(entity.x, entity.y, game);
+    this.state = STATE.MOVING; this.target = null;
+  }
+}
+
+class Building extends Entity {
+  constructor(type, team, tx, ty) {
+    const def = BLDG_DEF[type];
+    const worldX = (tx + def.tileW/2) * TILE;
+    const worldY = (ty + def.tileH/2) * TILE;
+    super(worldX, worldY, team);
+    this.type = type; this.tileX = tx; this.tileY = ty;
+    this.tileW = def.tileW; this.tileH = def.tileH;
+    this.hp = def.isMain ? def.hp : 1; this.maxHp = def.hp;
+    this.complete = def.isMain || def.buildTime===0;
+    this.constructProgress = def.isMain ? 1 : 0;
+    this.buildTime = def.buildTime;
+    this.productionQueue = []; this.trainTimer = 0;
+    this.isAttacker = def.isAttacker; this.attackDamage = def.attackDamage||0;
+    this.attackRange = def.attackRange||0; this.attackSpeed = def.attackSpeed||0;
+    this.isRanged = def.isRanged||false; this.attackTimer = 0;
+    this.radius = Math.min(def.tileW, def.tileH)*TILE/2;
+    this.exitX = worldX + def.tileW*TILE/2;
+    this.exitY = worldY + def.tileH*TILE/2;
+  }
+  update(dt, game) {
+    if (!this.alive) return;
+    if (!this.complete) {
+      this.constructProgress = Math.min(1, this.constructProgress + dt/this.buildTime);
+      this.hp = Math.max(1, Math.floor(this.constructProgress*this.maxHp));
+      if (this.constructProgress >= 1) { this.complete = true; this.hp = this.maxHp; }
+      return;
+    }
+    if (this.productionQueue.length > 0) {
+      const def = UNIT_DEF[this.productionQueue[0]];
+      this.trainTimer += dt;
+      if (this.trainTimer >= def.trainTime) {
+        this.trainTimer = 0;
+        const unitType = this.productionQueue.shift();
+        const ex = this.x + (Math.random()-0.5)*TILE;
+        const ey = (this.tileY + this.tileH)*TILE + TILE/2;
+        game.spawnUnit(unitType, this.team, ex, ey);
+      }
+    }
+    if (this.isAttacker) {
+      this.attackTimer = Math.max(0, this.attackTimer-dt);
+      if (this.attackTimer <= 0) {
+        const enemy = game.getNearestEnemy(this, this.attackRange);
+        if (enemy) {
+          this.attackTimer = 1/this.attackSpeed;
+          const n = norm(enemy.x-this.x, enemy.y-this.y);
+          game.addProjectile({
+            x:this.x, y:this.y, vx:n.x*280, vy:n.y*280,
+            damage:this.attackDamage, team:this.team,
+            targetId:enemy.id, speed:280, trail:[]
+          });
+        }
+      }
+    }
+  }
+  queueTrain(unitType, game) {
+    const def = UNIT_DEF[unitType];
+    const bDef = BLDG_DEF[this.type];
+    if (!bDef.trainable.includes(unitType)) return false;
+    if (!this.complete) return false;
+    const teamUnits = game.entities.filter(e => e.alive && e instanceof Unit && e.team===this.team).length;
+    if (teamUnits >= POP_CAP) return false;
+    const cost = def.cost;
+    if (this.team === TEAM.PLAYER) {
+      if (!game.player.canAfford(cost)) return false;
+      game.player.spend(cost);
+    } else {
+      if (game.ai.baseballs < cost) return false;
+      game.ai.baseballs -= cost;
+    }
+    this.productionQueue.push(unitType);
+    return true;
+  }
+}
+
+class Projectile {
+  constructor(data) {
+    this.id = genId();
+    this.x = data.x; this.y = data.y;
+    this.vx = data.vx; this.vy = data.vy;
+    this.damage = data.damage; this.team = data.team;
+    this.targetId = data.targetId; this.speed = data.speed;
+    this.trail = []; this.alive = true;
+  }
+  update(dt, game) {
+    if (!this.alive) return;
+    this.trail.unshift({x:this.x, y:this.y});
+    if (this.trail.length > 5) this.trail.pop();
+    this.x += this.vx*dt; this.y += this.vy*dt;
+    if (this.x<0 || this.x>MAP_COLS*TILE || this.y<0 || this.y>MAP_ROWS*TILE) {
+      this.alive = false; return;
+    }
+    const opposingTeam = this.team===TEAM.PLAYER ? TEAM.ENEMY : TEAM.PLAYER;
+    for (const e of game.entities) {
+      if (!e.alive || e.team!==opposingTeam) continue;
+      const r = (e instanceof Building) ? e.radius : (e.radius||12);
+      const dx = this.x-e.x, dy = this.y-e.y;
+      if (dx*dx+dy*dy < r*r) {
+        e.takeDamage(this.damage, game);
+        this.alive = false; return;
+      }
+    }
+  }
+}
+
+// ─── player.js ───────────────────────────────────────────────────────────────
+class Player {
+  constructor() {
+    this.baseballs = START_BASEBALLS;
+    this.selectedIds = new Set();
+    this.buildMode = null;
+    this.ghostTile = null;
+    this.ghostValid = false;
+  }
+  select(entity) { this.selectedIds.clear(); if (entity) this.selectedIds.add(entity.id); }
+  addToSelection(entity) { if (entity) this.selectedIds.add(entity.id); }
+  clearSelection() { this.selectedIds.clear(); }
+  canAfford(cost) { return this.baseballs >= cost; }
+  spend(cost) { this.baseballs = Math.max(0, this.baseballs-cost); }
+  earn(amount) { this.baseballs += amount; }
+  setBuildMode(type) { this.buildMode = type; this.ghostTile = null; this.ghostValid = false; }
+  cancelBuildMode() { this.buildMode = null; this.ghostTile = null; this.ghostValid = false; }
+}
+
+// ─── input.js ────────────────────────────────────────────────────────────────
+class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.mouseX = 0; this.mouseY = 0;
+    this.worldX = 0; this.worldY = 0;
+    this.buttons = {}; this.keys = {};
+    this.dragStart = null; this.dragCurrent = null;
+    this.isDragging = false; this.DRAG_THRESHOLD = 5;
+    this.pendingActions = [];
+    this._bindEvents();
+  }
+  _bindEvents() {
+    this.canvas.addEventListener('mousedown', e => this._onMouseDown(e));
+    this.canvas.addEventListener('mousemove', e => this._onMouseMove(e));
+    this.canvas.addEventListener('mouseup', e => this._onMouseUp(e));
+    this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+    window.addEventListener('keydown', e => this._onKeyDown(e));
+    window.addEventListener('keyup', e => this._onKeyUp(e));
+  }
+  _canvasCoords(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width/rect.width, scaleY = this.canvas.height/rect.height;
+    return {x:(e.clientX-rect.left)*scaleX, y:(e.clientY-rect.top)*scaleY};
+  }
+  _toWorld(cx, cy, camera) { return {x:cx+camera.x, y:cy+camera.y}; }
+  updateWorldCoords(camera) {
+    const w = this._toWorld(this.mouseX, this.mouseY, camera);
+    this.worldX = w.x; this.worldY = w.y;
+  }
+  _onMouseDown(e) {
+    const {x,y} = this._canvasCoords(e);
+    this.mouseX = x; this.mouseY = y; this.buttons[e.button] = true;
+    if (e.button===0) {
+      this.dragStart = {x,y}; this.isDragging = false;
+      this.pendingActions.push({type:'mousedown_left', cx:x, cy:y});
+    } else if (e.button===2) {
+      this.pendingActions.push({type:'mousedown_right', cx:x, cy:y});
+    }
+  }
+  _onMouseMove(e) {
+    const {x,y} = this._canvasCoords(e);
+    this.mouseX = x; this.mouseY = y;
+    if (this.dragStart && this.buttons[0]) {
+      const dx = x-this.dragStart.x, dy = y-this.dragStart.y;
+      if (!this.isDragging && Math.sqrt(dx*dx+dy*dy) > this.DRAG_THRESHOLD) this.isDragging = true;
+      if (this.isDragging) this.dragCurrent = {x,y};
+    }
+  }
+  _onMouseUp(e) {
+    const {x,y} = this._canvasCoords(e);
+    if (e.button===0) {
+      if (this.isDragging && this.dragStart) {
+        this.pendingActions.push({
+          type:'box_select',
+          x1:Math.min(this.dragStart.x,x), y1:Math.min(this.dragStart.y,y),
+          x2:Math.max(this.dragStart.x,x), y2:Math.max(this.dragStart.y,y)
+        });
+      } else {
+        this.pendingActions.push({type:'click_left', cx:x, cy:y});
+      }
+      this.dragStart = null; this.isDragging = false; this.dragCurrent = null;
+    }
+    this.buttons[e.button] = false;
+  }
+  _onKeyDown(e) {
+    this.keys[e.code] = true; this.keys[e.key] = true;
+    if (e.code==='Escape') this.pendingActions.push({type:'escape'});
+  }
+  _onKeyUp(e) { this.keys[e.code] = false; this.keys[e.key] = false; }
+  getActions() { const a = this.pendingActions; this.pendingActions = []; return a; }
+  getDragRect() {
+    if (!this.isDragging || !this.dragStart || !this.dragCurrent) return null;
+    return {
+      x:Math.min(this.dragStart.x, this.dragCurrent.x),
+      y:Math.min(this.dragStart.y, this.dragCurrent.y),
+      w:Math.abs(this.dragCurrent.x-this.dragStart.x),
+      h:Math.abs(this.dragCurrent.y-this.dragStart.y)
+    };
+  }
+  isKeyDown(code) { return !!this.keys[code]; }
+}
+
+// ─── ai.js ───────────────────────────────────────────────────────────────────
+class AI {
+  constructor() {
+    this.baseballs = 200; this.state = 'building';
+    this.tickTimer = 0; this.tickInterval = 1.0;
+    this.elapsedTime = 0; this.attackCooldown = 0;
+  }
+  update(dt, game) {
+    this.elapsedTime += dt;
+    this.tickTimer += dt;
+    this.attackCooldown = Math.max(0, this.attackCooldown-dt);
+    if (this.tickTimer >= this.tickInterval) { this.tickTimer = 0; this._tick(game); }
+  }
+  _tick(game) {
+    const myUnits = game.entities.filter(e => e.alive && e instanceof Unit && e.team===TEAM.ENEMY);
+    const myBuildings = game.entities.filter(e => e.alive && e instanceof Building && e.team===TEAM.ENEMY);
+    const myWorkers = myUnits.filter(u => u.isWorker);
+    const myFighters = myUnits.filter(u => !u.isWorker);
+    const hasBattingCage = myBuildings.some(b => b.type===BLDG.BATTING_CAGE);
+    const hasBullpen = myBuildings.some(b => b.type===BLDG.BULLPEN);
+    const hasBleachers = myBuildings.some(b => b.type===BLDG.BLEACHERS);
+    const dugout = myBuildings.find(b => b.type===BLDG.DUGOUT);
+    const shouldAttack = myFighters.length>=8 || this.elapsedTime>=90;
+    if (shouldAttack && myFighters.length>=5) this.state = 'attacking';
+    else this.state = 'building';
+    this._buildPhase(game, myWorkers, myBuildings, dugout, hasBattingCage, hasBullpen, hasBleachers);
+    this._trainUnits(game, myBuildings, myFighters, myWorkers);
+    if (this.state==='attacking') this._attackPhase(game, myFighters);
+  }
+  _buildPhase(game, myWorkers, myBuildings, dugout, hasBattingCage, hasBullpen, hasBleachers) {
+    if (!dugout||!dugout.alive) return;
+    if (myWorkers.length < 3) {
+      const d = myBuildings.find(b => b.type===BLDG.DUGOUT && b.complete);
+      if (d && this.baseballs >= UNIT_DEF[UNIT.GROUNDSKEEPER].cost && d.productionQueue.length < 2) {
+        d.queueTrain(UNIT.GROUNDSKEEPER, game);
+      }
+    }
+    if (!hasBattingCage && this.baseballs >= BLDG_DEF[BLDG.BATTING_CAGE].cost) this._placeBuilding(game, BLDG.BATTING_CAGE, dugout);
+    if (!hasBullpen && this.baseballs >= BLDG_DEF[BLDG.BULLPEN].cost) this._placeBuilding(game, BLDG.BULLPEN, dugout);
+    if (!hasBleachers && this.baseballs >= BLDG_DEF[BLDG.BLEACHERS].cost) this._placeBuilding(game, BLDG.BLEACHERS, dugout);
+  }
+  _placeBuilding(game, type, dugout) {
+    const def = BLDG_DEF[type];
+    if (this.baseballs < def.cost) return;
+    const baseTx = dugout.tileX, baseTy = dugout.tileY;
+    for (let radius=4; radius<=16; radius++) {
+      for (let dy=-radius; dy<=radius; dy++) {
+        for (let dx=-radius; dx<=radius; dx++) {
+          if (Math.abs(dx)!==radius && Math.abs(dy)!==radius) continue;
+          const tx=baseTx+dx, ty=baseTy+dy;
+          if (!game.map.isInBounds(tx,ty)) continue;
+          if (!game.map.isInBounds(tx+def.tileW-1, ty+def.tileH-1)) continue;
+          if (game.map.isAreaClear(tx,ty,def.tileW,def.tileH) && this._isEntityFree(game,tx,ty,def.tileW,def.tileH)) {
+            this.baseballs -= def.cost;
+            game.spawnBuilding(type, TEAM.ENEMY, tx, ty);
+            return;
+          }
+        }
+      }
+    }
+  }
+  _isEntityFree(game, tx, ty, tw, th) {
+    const wx1=tx*TILE, wy1=ty*TILE, wx2=(tx+tw)*TILE, wy2=(ty+th)*TILE;
+    for (const e of game.entities) {
+      if (!e.alive || !(e instanceof Building)) continue;
+      const bx1=e.tileX*TILE, by1=e.tileY*TILE, bx2=(e.tileX+e.tileW)*TILE, by2=(e.tileY+e.tileH)*TILE;
+      if (wx1<bx2 && wx2>bx1 && wy1<by2 && wy2>by1) return false;
+    }
+    return true;
+  }
+  _trainUnits(game, myBuildings, myFighters, myWorkers) {
+    const totalEnemyUnits = game.entities.filter(e => e.alive && e instanceof Unit && e.team===TEAM.ENEMY).length;
+    if (totalEnemyUnits >= 20) return;
+    for (const bldg of myBuildings) {
+      if (!bldg.complete || bldg.productionQueue.length>=3) continue;
+      if (bldg.type===BLDG.DUGOUT) {
+        if (myWorkers.length+bldg.productionQueue.length < 3) bldg.queueTrain(UNIT.GROUNDSKEEPER, game);
+      } else if (bldg.type===BLDG.BATTING_CAGE) {
+        bldg.queueTrain(myFighters.length%3===0 ? UNIT.CATCHER : UNIT.BATTER, game);
+      } else if (bldg.type===BLDG.BULLPEN) {
+        bldg.queueTrain(myFighters.length%4===0 ? UNIT.SLUGGER : UNIT.PITCHER, game);
+      }
+    }
+  }
+  _attackPhase(game, myFighters) {
+    if (this.attackCooldown > 0) return;
+    const playerDugout = game.entities.find(e => e.alive && e instanceof Building && e.team===TEAM.PLAYER && e.type===BLDG.DUGOUT);
+    if (!playerDugout) return;
+    const playerUnits = game.entities.filter(e => e.alive && e instanceof Unit && e.team===TEAM.PLAYER);
+    for (const fighter of myFighters) {
+      if (fighter.state===STATE.IDLE || fighter.state===STATE.MOVING) {
+        let target=null, minDist=Infinity;
+        for (const pu of playerUnits) {
+          const d = fighter.distTo(pu);
+          if (d<minDist){minDist=d; target=pu;}
+        }
+        if (target && minDist < fighter.range*3) fighter.attackTarget(target);
+        else fighter.moveTo(playerDugout.x+(Math.random()-0.5)*48, playerDugout.y+(Math.random()-0.5)*48, game);
+      }
+    }
+    this.attackCooldown = 5;
+  }
+}
+
+// ─── renderer.js ─────────────────────────────────────────────────────────────
+class Renderer {
+  constructor(ctx, camera) { this.ctx = ctx; this.camera = camera; }
+  render(game) {
+    const ctx = this.ctx, cam = this.camera;
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, CANVAS_WIDTH, VIEWPORT_HEIGHT);
+    ctx.clip();
+    ctx.save();
+    ctx.translate(-cam.x, -cam.y);
+    this._drawTiles(ctx, cam, game.map);
+    this._drawBuildings(ctx, game);
+    this._drawUnits(ctx, game);
+    this._drawProjectiles(ctx, game);
+    this._drawSelectionBox(ctx, game);
+    this._drawFloatingNumbers(ctx, game);
+    ctx.restore();
+    ctx.restore();
+    this._drawHUD(ctx, game);
+    this._drawOverlay(ctx, game);
+  }
+  _drawTiles(ctx, cam, map) {
+    const startCol = Math.max(0, Math.floor(cam.x/TILE));
+    const endCol = Math.min(MAP_COLS, Math.ceil((cam.x+CANVAS_WIDTH)/TILE)+1);
+    const startRow = Math.max(0, Math.floor(cam.y/TILE));
+    const endRow = Math.min(MAP_ROWS, Math.ceil((cam.y+VIEWPORT_HEIGHT)/TILE)+1);
+    for (let r=startRow; r<endRow; r++)
+      for (let c=startCol; c<endCol; c++)
+        this._drawTile(ctx, map.getTile(c,r), c*TILE, r*TILE);
+  }
+  _drawTile(ctx, tile, wx, wy) {
+    switch(tile) {
+      case TILE_TYPE.GRASS:
+        ctx.fillStyle = COLORS.GRASS;
+        ctx.fillRect(wx, wy, TILE, TILE);
+        ctx.strokeStyle = COLORS.GRASS_GRID;
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(wx+0.5, wy+0.5, TILE-1, TILE-1);
+        break;
+      case TILE_TYPE.DIRT:
+        ctx.fillStyle = COLORS.DIRT;
+        ctx.fillRect(wx, wy, TILE, TILE);
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.fillRect(wx+4,wy+8,3,3); ctx.fillRect(wx+18,wy+4,2,2); ctx.fillRect(wx+24,wy+20,3,2);
+        break;
+      case TILE_TYPE.OBSTACLE:
+        ctx.fillStyle = COLORS.OBSTACLE;
+        ctx.fillRect(wx, wy, TILE, TILE);
+        ctx.strokeStyle = COLORS.OBSTACLE_BORDER;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(wx+0.5, wy+0.5, TILE-1, TILE-1);
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 0.8;
+        ctx.beginPath(); ctx.moveTo(wx+4,wy+8); ctx.lineTo(wx+14,wy+22); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(wx+20,wy+5); ctx.lineTo(wx+28,wy+15); ctx.stroke();
+        break;
+      case TILE_TYPE.RESOURCE: {
+        ctx.fillStyle = COLORS.RESOURCE_BASE;
+        ctx.fillRect(wx, wy, TILE, TILE);
+        const dots = [{x:wx+8,y:wy+8},{x:wx+22,y:wy+8},{x:wx+8,y:wy+22},{x:wx+22,y:wy+22},{x:wx+15,y:wy+15}];
+        for (const d of dots) {
+          ctx.fillStyle = COLORS.RESOURCE_DOT;
+          ctx.beginPath(); ctx.arc(d.x,d.y,3,0,Math.PI*2); ctx.fill();
+          ctx.strokeStyle = '#cc0000'; ctx.lineWidth = 0.8;
+          ctx.beginPath(); ctx.arc(d.x,d.y,2.5,0.2,1.2); ctx.stroke();
+        }
+        break;
+      }
+    }
+  }
+  _drawBuildings(ctx, game) {
+    for (const e of game.entities) {
+      if (!(e instanceof Building)||!e.alive) continue;
+      this._drawBuilding(ctx, e, game);
+    }
+    if (game.player.buildMode && game.player.ghostTile) this._drawGhost(ctx, game);
+  }
+  _drawBuilding(ctx, bldg, game) {
+    const def = BLDG_DEF[bldg.type];
+    const x=bldg.tileX*TILE, y=bldg.tileY*TILE, w=bldg.tileW*TILE, h=bldg.tileH*TILE;
+    const isPlayer = bldg.team===TEAM.PLAYER;
+    const fillColor = isPlayer ? COLORS.PLAYER_BLDG_FILL : COLORS.ENEMY_BLDG_FILL;
+    const strokeColor = isPlayer ? COLORS.PLAYER_BLDG_STROKE : COLORS.ENEMY_BLDG_STROKE;
+    if (!bldg.complete) {
+      ctx.save();
+      ctx.beginPath(); drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.clip();
+      ctx.fillStyle = '#1a1a2e'; ctx.fillRect(x,y,w,h);
+      ctx.strokeStyle = isPlayer ? 'rgba(77,166,255,0.3)' : 'rgba(239,83,80,0.3)';
+      ctx.lineWidth = 4;
+      for (let i=-h; i<w+h; i+=12) {
+        ctx.beginPath(); ctx.moveTo(x+i,y); ctx.lineTo(x+i-h,y+h); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.fillStyle = '#0a0a0f'; ctx.fillRect(x+4,y+h-10,w-8,6);
+      ctx.fillStyle = COLORS.ORANGE; ctx.fillRect(x+4,y+h-10,(w-8)*bldg.constructProgress,6);
+      ctx.strokeStyle = strokeColor; ctx.lineWidth = 1.5; ctx.setLineDash([4,4]);
+      drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.stroke(); ctx.setLineDash([]);
+    } else {
+      ctx.shadowColor = strokeColor; ctx.shadowBlur = 8;
+      ctx.fillStyle = fillColor;
+      drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = strokeColor; ctx.lineWidth = 2;
+      drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.stroke();
+      ctx.strokeStyle = isPlayer ? 'rgba(79,195,247,0.18)' : 'rgba(239,83,80,0.18)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x+6,y+6); ctx.lineTo(x+w-6,y+6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+6,y+h-6); ctx.lineTo(x+w-6,y+h-6); ctx.stroke();
+    }
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = `bold ${Math.floor(Math.min(w,h)*0.25)}px "Courier New"`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(def.label, x+w/2, y+h/2);
+    if (bldg.complete && bldg.productionQueue.length > 0) {
+      const uDef = UNIT_DEF[bldg.productionQueue[0]];
+      const prog = bldg.trainTimer/uDef.trainTime;
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x+2,y+h+2,w-4,5);
+      ctx.fillStyle = isPlayer ? COLORS.CYAN : COLORS.RED;
+      ctx.fillRect(x+2,y+h+2,(w-4)*prog,5);
+    }
+    const hpRatio = bldg.hp/bldg.maxHp;
+    const hpColor = hpRatio>0.6 ? COLORS.HP_HIGH : hpRatio>0.3 ? COLORS.HP_MID : COLORS.HP_LOW;
+    ctx.fillStyle = COLORS.HP_BG; ctx.fillRect(x+2,y-7,w-4,4);
+    ctx.fillStyle = hpColor; ctx.fillRect(x+2,y-7,(w-4)*hpRatio,4);
+    if (game.player.selectedIds.has(bldg.id)) {
+      ctx.strokeStyle = COLORS.CYAN; ctx.lineWidth = 2; ctx.setLineDash([5,3]);
+      drawRoundedRect(ctx,x,y,w,h,6); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  _drawGhost(ctx, game) {
+    const def = BLDG_DEF[game.player.buildMode];
+    const {tx,ty} = game.player.ghostTile;
+    const x=tx*TILE, y=ty*TILE, w=def.tileW*TILE, h=def.tileH*TILE;
+    const valid = game.player.ghostValid;
+    ctx.globalAlpha = 0.65;
+    ctx.fillStyle = valid ? 'rgba(76,175,80,0.35)' : 'rgba(244,67,54,0.35)';
+    drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.fill();
+    ctx.strokeStyle = valid ? '#4caf50' : '#f44336'; ctx.lineWidth = 2; ctx.setLineDash([5,3]);
+    drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = `bold ${Math.floor(Math.min(w,h)*0.25)}px "Courier New"`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(def.label, x+w/2, y+h/2);
+    ctx.globalAlpha = 1;
+  }
+  _drawUnits(ctx, game) {
+    for (const e of game.entities) {
+      if (!(e instanceof Unit)||!e.alive) continue;
+      this._drawUnit(ctx, e, game);
+    }
+  }
+  _drawUnit(ctx, unit, game) {
+    const isPlayer = unit.team===TEAM.PLAYER;
+    const def = UNIT_DEF[unit.type];
+    const r = unit.radius;
+    const selected = game.player.selectedIds.has(unit.id);
+    if (selected) {
+      ctx.strokeStyle = COLORS.CYAN; ctx.lineWidth = 1.5; ctx.setLineDash([4,3]);
+      ctx.beginPath(); ctx.arc(unit.x,unit.y,r+4,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+    }
+    const strokeColor = isPlayer ? COLORS.PLAYER_STROKE : COLORS.ENEMY_STROKE;
+    ctx.shadowColor = strokeColor; ctx.shadowBlur = 5;
+    ctx.fillStyle = isPlayer ? COLORS.PLAYER_BODY : COLORS.ENEMY_BODY;
+    ctx.beginPath(); ctx.arc(unit.x,unit.y,r,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = strokeColor; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(unit.x,unit.y,r,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = isPlayer ? def.playerColor : def.enemyColor;
+    ctx.beginPath(); ctx.arc(unit.x,unit.y-2,r-2,Math.PI,0); ctx.fill();
+    if (unit.type===UNIT.BATTER || unit.type===UNIT.SLUGGER) {
+      ctx.strokeStyle = '#8B4513'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(unit.x+r-2,unit.y); ctx.lineTo(unit.x+r+8,unit.y-8); ctx.stroke();
+      ctx.fillStyle = '#D2691E'; ctx.beginPath(); ctx.arc(unit.x+r+8,unit.y-8,3,0,Math.PI*2); ctx.fill();
+    }
+    ctx.fillStyle = COLORS.WHITE;
+    ctx.font = `bold ${r}px "Courier New"`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(def.label, unit.x, unit.y+2);
+    const hpRatio = unit.hp/unit.maxHp;
+    const hpColor = hpRatio>0.6 ? COLORS.HP_HIGH : hpRatio>0.3 ? COLORS.HP_MID : COLORS.HP_LOW;
+    const barW = r*2+4, barX = unit.x-barW/2, barY = unit.y-r-8;
+    ctx.fillStyle = COLORS.HP_BG; ctx.fillRect(barX,barY,barW,3);
+    ctx.fillStyle = hpColor; ctx.fillRect(barX,barY,barW*hpRatio,3);
+    if (unit.isWorker && unit.carryAmt > 0) {
+      ctx.fillStyle = COLORS.GOLD; ctx.font = '8px "Courier New"';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`${unit.carryAmt}`, unit.x, unit.y-r-13);
+    }
+  }
+  _drawProjectiles(ctx, game) {
+    for (const p of game.projectiles) {
+      if (!p.alive) continue;
+      for (let i=0; i<p.trail.length; i++) {
+        const t=p.trail[i], alpha=(1-i/p.trail.length)*0.6;
+        const r2 = Math.max(0.5,3-i*0.5);
+        ctx.fillStyle = `rgba(255,107,53,${alpha})`;
+        ctx.beginPath(); ctx.arc(t.x,t.y,r2,0,Math.PI*2); ctx.fill();
+      }
+      ctx.shadowColor = COLORS.BASEBALL_GLOW; ctx.shadowBlur = 10;
+      ctx.fillStyle = COLORS.BASEBALL_FILL;
+      ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#cc0000'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(p.x,p.y,2.5,0.3,1.5); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p.x,p.y,2.5,3.4,4.8); ctx.stroke();
+    }
+  }
+  _drawSelectionBox(ctx, game) {
+    const drag = game.input.getDragRect();
+    if (!drag) return;
+    const cam = game.camera;
+    const wx=drag.x+cam.x, wy=drag.y+cam.y;
+    ctx.fillStyle = COLORS.SELECTION_FILL; ctx.fillRect(wx,wy,drag.w,drag.h);
+    ctx.strokeStyle = COLORS.SELECTION_STROKE; ctx.lineWidth = 1;
+    ctx.strokeRect(wx,wy,drag.w,drag.h);
+  }
+  _drawFloatingNumbers(ctx, game) {
+    for (const fn of game.floatingNumbers) {
+      const alpha = Math.max(0, fn.timer/0.8);
+      ctx.fillStyle = `rgba(255,80,80,${alpha})`;
+      ctx.font = 'bold 13px "Courier New"';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(`-${Math.ceil(fn.value)}`, fn.x, fn.y);
+    }
+  }
+  _drawHUD(ctx, game) { game.ui.draw(ctx, game); }
+  _drawOverlay(ctx, game) {
+    if (game.gameState==='playing') return;
+    ctx.fillStyle = COLORS.OVERLAY_BG;
+    ctx.fillRect(0,0,CANVAS_WIDTH,CANVAS_HEIGHT);
+    if (game.gameState==='start') this._drawStartScreen(ctx);
+    else if (game.gameState==='won') this._drawEndScreen(ctx,'VICTORY!',COLORS.VICTORY,'The enemy Dugout has been destroyed!');
+    else if (game.gameState==='lost') this._drawEndScreen(ctx,'DEFEAT!',COLORS.DEFEAT,'Your Dugout has been destroyed...');
+  }
+  _drawStartScreen(ctx) {
+    const cx=CANVAS_WIDTH/2, cy=CANVAS_HEIGHT/2-40;
+    const grad = ctx.createRadialGradient(cx,cy-20,0,cx,cy-20,220);
+    grad.addColorStop(0,'rgba(255,152,0,0.22)'); grad.addColorStop(1,'rgba(255,152,0,0)');
+    ctx.fillStyle = grad; ctx.fillRect(cx-220,cy-120,440,200);
+    ctx.font = 'bold 80px "Courier New"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.shadowColor = '#ff6b35'; ctx.shadowBlur = 35;
+    ctx.fillStyle = COLORS.TITLE_FIRE; ctx.fillText('BASEBOIL', cx, cy-30);
+    ctx.shadowColor = '#ff9800'; ctx.shadowBlur = 16;
+    ctx.fillStyle = COLORS.TITLE_ORANGE; ctx.fillText('BASEBOIL', cx, cy-30);
+    ctx.shadowBlur = 0;
+    ctx.font = '22px "Courier New"'; ctx.fillStyle = '#bbbbbb';
+    ctx.fillText('A Baseball RTS', cx, cy+42);
+    ctx.font = '14px "Courier New"'; ctx.fillStyle = '#666666';
+    ctx.fillText('Build your Dugout. Train your squad. Destroy the enemy.', cx, cy+76);
+    this._drawDecorativeBall(ctx, cx-170, cy-38, 18);
+    this._drawDecorativeBall(ctx, cx+170, cy-38, 18);
+    ctx.font = '12px "Courier New"'; ctx.fillStyle = '#555';
+    ctx.fillText('WASD/Arrows: scroll  |  Left click: select  |  Right click: move/attack  |  ESC: cancel', cx, cy+108);
+    const btnW=160, btnH=50, btnX=cx-80, btnY=cy+130;
+    ctx.fillStyle = '#1f2937'; ctx.strokeStyle = COLORS.ORANGE; ctx.lineWidth = 2;
+    drawRoundedRect(ctx,btnX,btnY,btnW,btnH,8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = COLORS.ORANGE; ctx.font = 'bold 24px "Courier New"';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('[ PLAY ]', cx, btnY+btnH/2);
+  }
+  _drawDecorativeBall(ctx, x, y, r) {
+    ctx.shadowColor = '#ff9800'; ctx.shadowBlur = 14;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#cc0000'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x,y,r*0.65,0.2,1.2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,r*0.65,3.3,4.5); ctx.stroke();
+  }
+  _drawEndScreen(ctx, title, titleColor, subtitle) {
+    const cx=CANVAS_WIDTH/2, cy=CANVAS_HEIGHT/2-30;
+    ctx.shadowColor = titleColor; ctx.shadowBlur = 32;
+    ctx.font = 'bold 72px "Courier New"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = titleColor; ctx.fillText(title, cx, cy-20);
+    ctx.shadowBlur = 0;
+    ctx.font = '22px "Courier New"'; ctx.fillStyle = '#aaaaaa'; ctx.fillText(subtitle, cx, cy+46);
+    ctx.font = '16px "Courier New"'; ctx.fillStyle = '#666'; ctx.fillText('Click anywhere to restart', cx, cy+90);
+  }
+}
+
+// ─── ui.js ───────────────────────────────────────────────────────────────────
+const HUD_Y = VIEWPORT_HEIGHT;
+
+class UI {
+  constructor() { this.buttons = []; this.hoveredButtonIdx = -1; }
+  getCommandButtons(game) {
+    const btns = [];
+    const selected = [...game.player.selectedIds].map(id => game.entities.find(e=>e.id===id)).filter(Boolean);
+    if (selected.length === 0) return btns;
+    if (selected.length===1 && selected[0] instanceof Building && selected[0].team===TEAM.PLAYER) {
+      const bldg = selected[0];
+      const bDef = BLDG_DEF[bldg.type];
+      for (const unitType of bDef.trainable) {
+        const uDef = UNIT_DEF[unitType];
+        const popCount = game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER).length;
+        const atCap = popCount >= POP_CAP;
+        const canAfford = game.player.canAfford(uDef.cost);
+        btns.push({
+          label:uDef.label, name:uDef.name, cost:uDef.cost, icon:_unitIcon(unitType),
+          enabled:canAfford&&!atCap&&bldg.complete,
+          tip:atCap?'Pop cap!':!bldg.complete?'Constructing':!canAfford?'Need ⚾':'',
+          action:{type:'train', unitType, buildingId:bldg.id}
+        });
+      }
+    }
+    const hasGK = selected.some(e=>e instanceof Unit&&e.type===UNIT.GROUNDSKEEPER&&e.team===TEAM.PLAYER);
+    if (hasGK) {
+      for (const bldgType of [BLDG.BATTING_CAGE, BLDG.BULLPEN, BLDG.BLEACHERS]) {
+        const bDef = BLDG_DEF[bldgType];
+        const canAfford = game.player.canAfford(bDef.cost);
+        btns.push({
+          label:bDef.label, name:bDef.name, cost:bDef.cost, icon:_bldgIcon(bldgType),
+          enabled:canAfford, tip:canAfford?`Build ${bDef.name}`:'Need ⚾',
+          action:{type:'build', bldgType}
+        });
+      }
+    }
+    return btns;
+  }
+  handleClick(cx, cy, game) {
+    if (cy < HUD_Y) return false;
+    for (const btn of this.buttons) {
+      if (pointInRect(cx,cy,btn.x,btn.y,btn.w,btn.h)) {
+        if (btn.enabled) this._executeAction(btn.action, game);
+        return true;
+      }
+    }
+    return false;
+  }
+  _executeAction(action, game) {
+    if (action.type==='train') {
+      const bldg = game.entities.find(e=>e.id===action.buildingId);
+      if (bldg) bldg.queueTrain(action.unitType, game);
+    } else if (action.type==='build') {
+      game.player.setBuildMode(action.bldgType);
+      document.getElementById('gameCanvas').classList.add('crosshair');
+    }
+  }
+  updateHover(cx, cy) {
+    this.hoveredButtonIdx = -1;
+    if (cy < HUD_Y) return;
+    for (let i=0; i<this.buttons.length; i++) {
+      if (pointInRect(cx,cy,this.buttons[i].x,this.buttons[i].y,this.buttons[i].w,this.buttons[i].h)) {
+        this.hoveredButtonIdx = i; break;
+      }
+    }
+  }
+  draw(ctx, game) {
+    ctx.fillStyle = COLORS.HUD_BG; ctx.fillRect(0,HUD_Y,CANVAS_WIDTH,HUD_HEIGHT);
+    ctx.strokeStyle = COLORS.ORANGE; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0,HUD_Y); ctx.lineTo(CANVAS_WIDTH,HUD_Y); ctx.stroke();
+    ctx.strokeStyle = '#2d3748'; ctx.lineWidth = 1;
+    [300,900].forEach(x => {
+      ctx.beginPath(); ctx.moveTo(x,HUD_Y); ctx.lineTo(x,HUD_Y+HUD_HEIGHT); ctx.stroke();
+    });
+    this._drawSelectionPanel(ctx, game);
+    this._drawCommandPanel(ctx, game);
+    this._drawStatsPanel(ctx, game);
+  }
+  _drawSelectionPanel(ctx, game) {
+    const px=5, py=HUD_Y+5, pw=290, ph=HUD_HEIGHT-10;
+    const selected = [...game.player.selectedIds].map(id=>game.entities.find(e=>e.id===id)).filter(Boolean);
+    if (selected.length===0) {
+      ctx.fillStyle = '#4b5563'; ctx.font = '12px "Courier New"';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('No selection', px+pw/2, py+ph/2); return;
+    }
+    if (selected.length===1) this._drawSingleInfo(ctx,selected[0],px,py,pw,ph);
+    else this._drawMultiInfo(ctx,selected,px,py,pw,ph);
+  }
+  _drawSingleInfo(ctx, e, px, py, pw, ph) {
+    const portSz=ph-16, portX=px+5, portY=py+8;
+    const isPlayer = e.team===TEAM.PLAYER;
+    const accentColor = isPlayer ? COLORS.CYAN : COLORS.RED;
+    ctx.fillStyle = '#111827'; ctx.strokeStyle = accentColor; ctx.lineWidth = 1.5;
+    drawRoundedRect(ctx,portX,portY,portSz,portSz,4); ctx.fill(); ctx.stroke();
+    const cx=portX+portSz/2, cy=portY+portSz/2;
+    if (e instanceof Unit) {
+      const def = UNIT_DEF[e.type];
+      ctx.fillStyle = isPlayer ? COLORS.PLAYER_BODY : COLORS.ENEMY_BODY;
+      ctx.beginPath(); ctx.arc(cx,cy,portSz*0.30,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = accentColor; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = COLORS.WHITE;
+      ctx.font = `bold ${Math.floor(portSz*0.28)}px "Courier New"`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(def.label, cx, cy);
+    } else if (e instanceof Building) {
+      const def = BLDG_DEF[e.type];
+      ctx.fillStyle = isPlayer ? COLORS.PLAYER_BLDG_FILL : COLORS.ENEMY_BLDG_FILL;
+      ctx.fillRect(portX+6,portY+6,portSz-12,portSz-12);
+      ctx.fillStyle = COLORS.WHITE;
+      ctx.font = `bold ${Math.floor(portSz*0.22)}px "Courier New"`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(def.label, cx, cy);
+    }
+    const infoX=portX+portSz+10, infoW=pw-portSz-22;
+    let name='', statusLine='', extraLine='';
+    if (e instanceof Unit) {
+      const def = UNIT_DEF[e.type];
+      name=def.name; statusLine=e.state;
+      if (e.isWorker&&e.carryAmt>0) extraLine=`Carry: ${e.carryAmt}/${e.carryMax} ⚾`;
+    } else if (e instanceof Building) {
+      const def = BLDG_DEF[e.type];
+      name=def.name;
+      if (!e.complete) statusLine=`Building ${Math.floor(e.constructProgress*100)}%`;
+      else if (e.productionQueue.length>0) {
+        const uDef = UNIT_DEF[e.productionQueue[0]];
+        statusLine=`Training ${uDef.label}... ${Math.floor((e.trainTimer/uDef.trainTime)*100)}%`;
+        if (e.productionQueue.length>1) extraLine=`Queue: +${e.productionQueue.length-1}`;
+      } else statusLine='Idle';
+    }
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillStyle=COLORS.WHITE; ctx.font='bold 13px "Courier New"';
+    ctx.fillText(name, infoX, py+8);
+    const hpRatio=e.hp/e.maxHp;
+    const hpColor=hpRatio>0.6?COLORS.HP_HIGH:hpRatio>0.3?COLORS.HP_MID:COLORS.HP_LOW;
+    ctx.fillStyle=COLORS.HP_BG; ctx.fillRect(infoX,py+26,infoW,6);
+    ctx.fillStyle=hpColor; ctx.fillRect(infoX,py+26,infoW*hpRatio,6);
+    ctx.fillStyle='#9ca3af'; ctx.font='10px "Courier New"';
+    ctx.fillText(`HP ${Math.ceil(e.hp)}/${e.maxHp}`, infoX, py+37);
+    ctx.fillStyle='#6b7280'; ctx.font='10px "Courier New"';
+    ctx.fillText(statusLine, infoX, py+52);
+    if (extraLine) ctx.fillText(extraLine, infoX, py+66);
+  }
+  _drawMultiInfo(ctx, selected, px, py, pw, ph) {
+    ctx.fillStyle=COLORS.WHITE; ctx.font='bold 12px "Courier New"';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText(`${selected.length} units selected`, px+5, py+4);
+    const iconSz=22, gap=4, cols=Math.floor(pw/(iconSz+gap));
+    selected.slice(0,12).forEach((e,i) => {
+      if (!(e instanceof Unit)) return;
+      const def=UNIT_DEF[e.type], col=i%cols, row=Math.floor(i/cols);
+      const ix=px+5+col*(iconSz+gap), iy=py+22+row*(iconSz+gap);
+      ctx.fillStyle=e.team===TEAM.PLAYER?COLORS.PLAYER_BODY:COLORS.ENEMY_BODY;
+      drawRoundedRect(ctx,ix,iy,iconSz,iconSz,3); ctx.fill();
+      ctx.strokeStyle=COLORS.CYAN; ctx.lineWidth=1; ctx.stroke();
+      ctx.fillStyle=COLORS.WHITE; ctx.font='bold 9px "Courier New"';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(def.label, ix+iconSz/2, iy+iconSz/2);
+    });
+  }
+  _drawCommandPanel(ctx, game) {
+    const panelX=305, panelY=HUD_Y, panelW=590;
+    const cmdBtns = this.getCommandButtons(game);
+    const btnSz=70, gap=8, cols=4;
+    const totalBtnW=cols*btnSz+(cols-1)*gap;
+    const startX=panelX+Math.floor((panelW-totalBtnW)/2);
+    const startY=panelY+8;
+    this.buttons=[];
+    cmdBtns.slice(0,8).forEach((btn,i) => {
+      const col=i%cols, row=Math.floor(i/cols);
+      const bx=startX+col*(btnSz+gap), by=startY+row*(btnSz+gap);
+      const storedBtn={...btn,x:bx,y:by,w:btnSz,h:btnSz};
+      this.buttons.push(storedBtn);
+      const hovered=this.hoveredButtonIdx===i;
+      ctx.fillStyle=!btn.enabled?COLORS.BUTTON_DISABLED:hovered?COLORS.BUTTON_HOVER:COLORS.BUTTON_BG;
+      ctx.strokeStyle=!btn.enabled?'#2d3748':hovered?COLORS.ORANGE:COLORS.BUTTON_BORDER;
+      ctx.lineWidth=hovered?2:1.5;
+      drawRoundedRect(ctx,bx,by,btnSz,btnSz,5); ctx.fill(); ctx.stroke();
+      ctx.font='20px serif'; ctx.textAlign='center'; ctx.textBaseline='top';
+      ctx.fillText(btn.icon, bx+btnSz/2, by+5);
+      ctx.fillStyle=btn.enabled?COLORS.WHITE:'#4b5563';
+      ctx.font='bold 9px "Courier New"'; ctx.textAlign='center'; ctx.textBaseline='top';
+      ctx.fillText(btn.name.length>10?btn.name.substring(0,10):btn.name, bx+btnSz/2, by+31);
+      ctx.fillStyle=btn.enabled?COLORS.GOLD:'#4b5563';
+      ctx.font='9px "Courier New"';
+      ctx.fillText(`⚾${btn.cost}`, bx+btnSz/2, by+44);
+      if (!btn.enabled) {
+        ctx.fillStyle='rgba(0,0,0,0.35)';
+        drawRoundedRect(ctx,bx,by,btnSz,btnSz,5); ctx.fill();
+      }
+    });
+    if (game.player.buildMode) {
+      const bDef = BLDG_DEF[game.player.buildMode];
+      ctx.fillStyle=COLORS.ORANGE; ctx.font='bold 11px "Courier New"';
+      ctx.textAlign='center'; ctx.textBaseline='bottom';
+      ctx.fillText(`BUILD MODE: ${bDef.name} — ESC to cancel`, panelX+panelW/2, HUD_Y+HUD_HEIGHT-4);
+    }
+  }
+  _drawStatsPanel(ctx, game) {
+    const px=908, py=HUD_Y+8;
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.shadowColor=COLORS.GOLD; ctx.shadowBlur=6;
+    ctx.fillStyle=COLORS.GOLD; ctx.font='bold 16px "Courier New"';
+    ctx.fillText(`⚾ ${game.player.baseballs}`, px, py);
+    ctx.shadowBlur=0;
+    const unitCount=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER).length;
+    ctx.fillStyle=unitCount>=POP_CAP?COLORS.RED:COLORS.WHITE;
+    ctx.font='13px "Courier New"';
+    ctx.fillText(`👥 ${unitCount} / ${POP_CAP}`, px, py+22);
+    const inning=Math.min(MAX_INNINGS,Math.floor(game.inningTimer/INNING_DURATION)+1);
+    ctx.fillStyle=COLORS.ORANGE; ctx.font='bold 13px "Courier New"';
+    ctx.fillText(`INNING ${inning} / ${MAX_INNINGS}`, px, py+42);
+    const secLeft=Math.ceil(INNING_DURATION-(game.inningTimer%INNING_DURATION));
+    ctx.fillStyle='#6b7280'; ctx.font='10px "Courier New"';
+    ctx.fillText(`Next: ${secLeft}s`, px, py+60);
+    const enemyCount=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.ENEMY).length;
+    ctx.fillStyle='#ef5350'; ctx.font='11px "Courier New"';
+    ctx.fillText(`ENEMY: ${enemyCount} units`, px, py+76);
+    const harvesting=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.type===UNIT.GROUNDSKEEPER&&e.team===TEAM.PLAYER&&e.state==='HARVESTING').length;
+    ctx.fillStyle='#6b7280'; ctx.font='10px "Courier New"';
+    ctx.fillText(`Income: ~${harvesting*10}/s`, px, py+92);
+  }
+}
+function _unitIcon(type) {
+  return {GROUNDSKEEPER:'🔧',BATTER:'🏏',PITCHER:'⚾',CATCHER:'🛡',SLUGGER:'💥'}[type]||'?';
+}
+function _bldgIcon(type) {
+  return {BATTING_CAGE:'🏟',BULLPEN:'⚡',BLEACHERS:'🗼'}[type]||'?';
+}
+
+// ─── game.js ─────────────────────────────────────────────────────────────────
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.constants = {MAP_COLS, MAP_ROWS, TILE, POP_CAP, VIEWPORT_HEIGHT, HUD_HEIGHT};
+    this.map = new GameMap();
+    this.entities = []; this.projectiles = []; this.floatingNumbers = [];
+    this.player = new Player();
+    this.ai = new AI();
+    this.input = new Input(canvas);
+    this.camera = {x:0, y:0};
+    this.renderer = new Renderer(this.ctx, this.camera);
+    this.ui = new UI();
+    this.gameState = 'start';
+    this.inningTimer = 0;
+  }
+  init() {
+    this.entities = []; this.projectiles = []; this.floatingNumbers = [];
+    this.player = new Player(); this.ai = new AI();
+    const playerBase={tx:4,ty:4}, enemyBase={tx:57,ty:41};
+    this.map = new GameMap();
+    this.map.generate(playerBase, enemyBase);
+    this.spawnBuilding(BLDG.DUGOUT, TEAM.PLAYER, playerBase.tx, playerBase.ty);
+    this.spawnBuilding(BLDG.DUGOUT, TEAM.ENEMY, enemyBase.tx, enemyBase.ty);
+    const playerDugout = this.entities.find(e=>e instanceof Building&&e.type===BLDG.DUGOUT&&e.team===TEAM.PLAYER);
+    if (playerDugout) {
+      this.spawnUnit(UNIT.GROUNDSKEEPER, TEAM.PLAYER, playerDugout.x+48, playerDugout.y+16);
+      this.spawnUnit(UNIT.GROUNDSKEEPER, TEAM.PLAYER, playerDugout.x+16, playerDugout.y+48);
+    }
+    const enemyDugout = this.entities.find(e=>e instanceof Building&&e.type===BLDG.DUGOUT&&e.team===TEAM.ENEMY);
+    if (enemyDugout) {
+      this.spawnUnit(UNIT.GROUNDSKEEPER, TEAM.ENEMY, enemyDugout.x-48, enemyDugout.y-16);
+      this.spawnUnit(UNIT.GROUNDSKEEPER, TEAM.ENEMY, enemyDugout.x-16, enemyDugout.y-48);
+    }
+    const pWorld = tileToWorld(playerBase.tx, playerBase.ty);
+    this.camera.x = clamp(pWorld.x-CANVAS_WIDTH/2, 0, MAP_COLS*TILE-CANVAS_WIDTH);
+    this.camera.y = clamp(pWorld.y-VIEWPORT_HEIGHT/2, 0, MAP_ROWS*TILE-VIEWPORT_HEIGHT);
+    this.inningTimer = 0;
+    this.gameState = 'playing';
+  }
+  restart() { this.init(); }
+  spawnUnit(type, team, x, y) {
+    const teamUnits = this.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===team).length;
+    if (teamUnits >= POP_CAP) return null;
+    x = clamp(x, TILE, MAP_COLS*TILE-TILE);
+    y = clamp(y, TILE, MAP_ROWS*TILE-TILE);
+    const unit = new Unit(type, team, x, y);
+    this.entities.push(unit);
+    return unit;
+  }
+  spawnBuilding(type, team, tx, ty) {
+    const def = BLDG_DEF[type];
+    const bldg = new Building(type, team, tx, ty);
+    this.entities.push(bldg);
+    for (let r=ty; r<ty+def.tileH; r++)
+      for (let c=tx; c<tx+def.tileW; c++)
+        this.map.setBlocked(c, r, true);
+    return bldg;
+  }
+  addProjectile(data) { const p=new Projectile(data); this.projectiles.push(p); return p; }
+  getEntitiesInRect(rect) {
+    return this.entities.filter(e => {
+      if (!e.alive) return false;
+      if (e instanceof Building) {
+        return rectOverlap(rect, {x:e.tileX*TILE,y:e.tileY*TILE,w:e.tileW*TILE,h:e.tileH*TILE});
+      } else if (e instanceof Unit) {
+        return e.x>=rect.x && e.x<=rect.x+rect.w && e.y>=rect.y && e.y<=rect.y+rect.h;
+      }
+      return false;
+    });
+  }
+  getNearestEnemy(entity, range) {
+    const opposingTeam = entity.team===TEAM.PLAYER ? TEAM.ENEMY : TEAM.PLAYER;
+    let best=null, bestDist=range;
+    for (const e of this.entities) {
+      if (!e.alive || e.team!==opposingTeam) continue;
+      const d = entity instanceof Unit ? entity.distTo(e) : dist(entity, e);
+      if (d<bestDist){bestDist=d; best=e;}
+    }
+    return best;
+  }
+  update(dt) {
+    if (this.gameState !== 'playing') return;
+    this.inningTimer += dt;
+    this._updateCamera(dt);
+    this.input.updateWorldCoords(this.camera);
+    this._updateGhostBuilding();
+    this._processInputActions();
+    for (const e of this.entities) if (e.alive) e.update(dt, this);
+    for (const p of this.projectiles) if (p.alive) p.update(dt, this);
+    for (const fn of this.floatingNumbers) { fn.timer -= dt; fn.y -= 30*dt; }
+    this.ai.update(dt, this);
+    this.ui.updateHover(this.input.mouseX, this.input.mouseY);
+    this.entities = this.entities.filter(e => {
+      if (!e.alive) {
+        if (e instanceof Building) {
+          const def = BLDG_DEF[e.type];
+          for (let r=e.tileY; r<e.tileY+def.tileH; r++)
+            for (let c=e.tileX; c<e.tileX+def.tileW; c++)
+              this.map.setBlocked(c, r, false);
+        }
+        return false;
+      }
+      return true;
+    });
+    this.projectiles = this.projectiles.filter(p => p.alive);
+    this.floatingNumbers = this.floatingNumbers.filter(fn => fn.timer > 0);
+    this._checkWinLose();
+  }
+  _updateCamera(dt) {
+    const inp=this.input, speed=CAM_SPEED;
+    const maxX=MAP_COLS*TILE-CANVAS_WIDTH, maxY=MAP_ROWS*TILE-VIEWPORT_HEIGHT;
+    if (inp.isKeyDown('KeyW')||inp.isKeyDown('ArrowUp'))    this.camera.y=Math.max(0,this.camera.y-speed*dt);
+    if (inp.isKeyDown('KeyS')||inp.isKeyDown('ArrowDown'))  this.camera.y=Math.min(maxY,this.camera.y+speed*dt);
+    if (inp.isKeyDown('KeyA')||inp.isKeyDown('ArrowLeft'))  this.camera.x=Math.max(0,this.camera.x-speed*dt);
+    if (inp.isKeyDown('KeyD')||inp.isKeyDown('ArrowRight')) this.camera.x=Math.min(maxX,this.camera.x+speed*dt);
+  }
+  _updateGhostBuilding() {
+    if (!this.player.buildMode) return;
+    const def = BLDG_DEF[this.player.buildMode];
+    if (this.input.mouseY > VIEWPORT_HEIGHT) { this.player.ghostTile=null; return; }
+    const tile = worldToTile(this.input.worldX, this.input.worldY);
+    const tx = tile.tx-Math.floor(def.tileW/2);
+    const ty = tile.ty-Math.floor(def.tileH/2);
+    this.player.ghostTile = {tx, ty};
+    this.player.ghostValid = this._isBuildingPlacementValid(this.player.buildMode, tx, ty);
+  }
+  _isBuildingPlacementValid(type, tx, ty) {
+    const def = BLDG_DEF[type];
+    if (!this.map.isInBounds(tx,ty)) return false;
+    if (!this.map.isInBounds(tx+def.tileW-1, ty+def.tileH-1)) return false;
+    if (!this.map.isAreaClear(tx,ty,def.tileW,def.tileH)) return false;
+    for (const e of this.entities) {
+      if (!e.alive) continue;
+      if (e instanceof Unit) {
+        const t=worldToTile(e.x,e.y);
+        if (t.tx>=tx&&t.tx<tx+def.tileW&&t.ty>=ty&&t.ty<ty+def.tileH) return false;
+      } else if (e instanceof Building) {
+        if (tx<e.tileX+e.tileW&&tx+def.tileW>e.tileX&&ty<e.tileY+e.tileH&&ty+def.tileH>e.tileY) return false;
+      }
+    }
+    return true;
+  }
+  _processInputActions() {
+    for (const action of this.input.getActions()) {
+      switch(action.type) {
+        case 'escape':          this._handleEscape(); break;
+        case 'click_left':      this._handleLeftClick(action.cx, action.cy); break;
+        case 'mousedown_right': this._handleRightClick(action.cx, action.cy); break;
+        case 'box_select':      this._handleBoxSelect(action.x1,action.y1,action.x2,action.y2); break;
+      }
+    }
+  }
+  _handleEscape() {
+    if (this.player.buildMode) {
+      this.player.cancelBuildMode();
+      document.getElementById('gameCanvas').classList.remove('crosshair');
+    } else {
+      this.player.clearSelection();
+    }
+  }
+  _handleLeftClick(cx, cy) {
+    if (this.gameState==='start')            { this.init(); return; }
+    if (this.gameState==='won'||this.gameState==='lost') { this.restart(); return; }
+    if (cy >= VIEWPORT_HEIGHT) { this.ui.handleClick(cx, cy, this); return; }
+    const wx=cx+this.camera.x, wy=cy+this.camera.y;
+    if (this.player.buildMode) {
+      if (this.player.ghostTile && this.player.ghostValid) {
+        const {tx,ty}=this.player.ghostTile;
+        const def=BLDG_DEF[this.player.buildMode];
+        if (this.player.canAfford(def.cost)) {
+          this.player.spend(def.cost);
+          this.spawnBuilding(this.player.buildMode, TEAM.PLAYER, tx, ty);
+          this.player.cancelBuildMode();
+          document.getElementById('gameCanvas').classList.remove('crosshair');
+        }
+      }
+      return;
+    }
+    const clicked = this._getEntityAtWorld(wx, wy);
+    if (clicked && clicked.team===TEAM.PLAYER) this.player.select(clicked);
+    else this.player.clearSelection();
+  }
+  _handleRightClick(cx, cy) {
+    if (this.gameState!=='playing'||cy>=VIEWPORT_HEIGHT) return;
+    const wx=cx+this.camera.x, wy=cy+this.camera.y;
+    const selected=[...this.player.selectedIds]
+      .map(id=>this.entities.find(e=>e.id===id))
+      .filter(e=>e&&e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER);
+    if (selected.length===0) return;
+    const target=this._getEntityAtWorld(wx, wy);
+    if (target && target.team===TEAM.ENEMY) {
+      for (const unit of selected) unit.attackTarget(target);
+    } else {
+      const spreadRadius=Math.ceil(Math.sqrt(selected.length))*(TILE/2);
+      selected.forEach((unit,i) => {
+        const angle=(i/selected.length)*Math.PI*2;
+        const r=(i===0)?0:spreadRadius*(0.5+Math.floor(i/6)*0.5);
+        unit.moveTo(
+          clamp(wx+Math.cos(angle)*r, TILE, MAP_COLS*TILE-TILE),
+          clamp(wy+Math.sin(angle)*r, TILE, MAP_ROWS*TILE-TILE),
+          this
+        );
+      });
+    }
+  }
+  _handleBoxSelect(cx1, cy1, cx2, cy2) {
+    if (this.gameState!=='playing') return;
+    if (Math.min(cy1,cy2) >= VIEWPORT_HEIGHT) return;
+    const rect={
+      x:Math.min(cx1+this.camera.x, cx2+this.camera.x),
+      y:Math.min(cy1+this.camera.y, cy2+this.camera.y),
+      w:Math.abs(cx2-cx1), h:Math.abs(cy2-cy1)
+    };
+    this.player.clearSelection();
+    for (const e of this.entities) {
+      if (!e.alive||e.team!==TEAM.PLAYER||!(e instanceof Unit)) continue;
+      if (e.x>=rect.x&&e.x<=rect.x+rect.w&&e.y>=rect.y&&e.y<=rect.y+rect.h) this.player.addToSelection(e);
+    }
+  }
+  _getEntityAtWorld(wx, wy) {
+    for (const e of [...this.entities].reverse()) {
+      if (!e.alive||!(e instanceof Building)) continue;
+      const bx=e.tileX*TILE, by=e.tileY*TILE, bw=e.tileW*TILE, bh=e.tileH*TILE;
+      if (wx>=bx&&wx<=bx+bw&&wy>=by&&wy<=by+bh) return e;
+    }
+    for (const e of [...this.entities].reverse()) {
+      if (!e.alive||!(e instanceof Unit)) continue;
+      if (Math.sqrt((wx-e.x)**2+(wy-e.y)**2) <= e.radius+4) return e;
+    }
+    return null;
+  }
+  _checkWinLose() {
+    const pDug=this.entities.find(e=>e.alive&&e instanceof Building&&e.team===TEAM.PLAYER&&e.type===BLDG.DUGOUT);
+    const eDug=this.entities.find(e=>e.alive&&e instanceof Building&&e.team===TEAM.ENEMY&&e.type===BLDG.DUGOUT);
+    if (!pDug) this.gameState='lost';
+    else if (!eDug) this.gameState='won';
+  }
+  render() { this.renderer.render(this); }
+}
+
+// ─── main.js (boot) ──────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('gameCanvas');
+  canvas.width = CANVAS_WIDTH;
+  canvas.height = CANVAS_HEIGHT;
+
+  const game = new Game(canvas);
+  game.gameState = 'start';
+
+  let lastTime = null;
+  const MAX_DT = 0.05;
+
+  function loop(timestamp) {
+    if (lastTime === null) lastTime = timestamp;
+    const dt = Math.min((timestamp-lastTime)/1000, MAX_DT);
+    lastTime = timestamp;
+
+    if (game.gameState === 'start') {
+      const actions = game.input.getActions();
+      for (const action of actions) {
+        if (action.type==='click_left'||action.type==='mousedown_right') { game.init(); break; }
+      }
+    } else {
+      game.update(dt);
+    }
+
+    game.render();
+    requestAnimationFrame(loop);
+  }
+
+  game.render();
+  requestAnimationFrame(loop);
+});
+</script>
+</body>
+</html>
