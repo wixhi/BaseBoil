@@ -2,8 +2,8 @@ import { UNIT, BLDG } from './constants.js';
 
 export const UNIT_DEF = {
   [UNIT.GROUNDSKEEPER]: {
-    label: 'GK',
-    name: 'Groundskeeper',
+    label: 'BB',
+    name: 'Ball Boy',
     hp: 40,
     speed: 70,
     damage: 4,

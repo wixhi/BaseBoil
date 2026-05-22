@@ -28,6 +28,8 @@ export class Game {
     this.entities = [];
     this.projectiles = [];
     this.floatingNumbers = [];
+    this.particles = [];
+    this.time = 0;
 
     this.player = new Player();
     this.ai = new AI();
@@ -45,6 +47,8 @@ export class Game {
     this.entities = [];
     this.projectiles = [];
     this.floatingNumbers = [];
+    this.particles = [];
+    this.time = 0;
 
     this.player = new Player();
     this.ai = new AI();
@@ -133,6 +137,31 @@ export class Game {
     return proj;
   }
 
+  spawnBeerExplosion(x, y, count = 20) {
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 60 + Math.random() * 180;
+      const isFoam = Math.random() < 0.35;
+      this.particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 80,
+        life: 1.2 + Math.random() * 0.8,
+        maxLife: 2,
+        color: isFoam ? '#fff8e1' : (Math.random() < 0.6 ? '#f59e0b' : '#d97706'),
+        size: isFoam ? 4 + Math.random() * 5 : 3 + Math.random() * 6,
+        type: 'beer'
+      });
+    }
+  }
+
+  retireUnit(unitId) {
+    const unit = this.entities.find(e => e.id === unitId && e.alive);
+    if (!unit) return;
+    unit.alive = false;
+    this.player.selectedIds.delete(unitId);
+  }
+
   getEntitiesInRect(rect) {
     // rect is in world coords
     return this.entities.filter(e => {
@@ -172,6 +201,7 @@ export class Game {
   update(dt) {
     if (this.gameState !== 'playing') return;
 
+    this.time += dt;
     // Update inning timer
     this.inningTimer += dt;
 
@@ -203,6 +233,14 @@ export class Game {
       fn.y -= 30 * dt;
     }
 
+    // Update beer/steam particles
+    for (const p of this.particles) {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 120 * dt; // gravity
+      p.life -= dt;
+    }
+
     // Update AI
     this.ai.update(dt, this);
 
@@ -212,8 +250,9 @@ export class Game {
     // Cleanup dead entities
     this.entities = this.entities.filter(e => {
       if (!e.alive) {
-        // Unblock tiles if building
         if (e instanceof Building) {
+          // Beer explosion when any building dies
+          this.spawnBeerExplosion(e.x, e.y, e.type === BLDG.DUGOUT ? 40 : 18);
           const def = BLDG_DEF[e.type];
           for (let r = e.tileY; r < e.tileY + def.tileH; r++) {
             for (let c = e.tileX; c < e.tileX + def.tileW; c++) {
@@ -231,6 +270,9 @@ export class Game {
 
     // Remove expired floating numbers
     this.floatingNumbers = this.floatingNumbers.filter(fn => fn.timer > 0);
+
+    // Remove expired particles
+    this.particles = this.particles.filter(p => p.life > 0);
 
     // Check win/lose
     this._checkWinLose();

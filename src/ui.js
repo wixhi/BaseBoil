@@ -75,6 +75,19 @@ export class UI {
       }
     }
 
+    // Retire button for any single selected player unit
+    if (selected.length === 1 && selected[0] instanceof Unit && selected[0].team === TEAM.PLAYER) {
+      btns.push({
+        label: 'RET',
+        name: 'Retire',
+        cost: 0,
+        icon: '👋',
+        enabled: true,
+        tip: 'Remove unit, free pop slot',
+        action: { type: 'retire', unitId: selected[0].id }
+      });
+    }
+
     return btns;
   }
 
@@ -100,6 +113,8 @@ export class UI {
     } else if (action.type === 'build') {
       game.player.setBuildMode(action.bldgType);
       document.getElementById('gameCanvas').classList.add('crosshair');
+    } else if (action.type === 'retire') {
+      game.retireUnit(action.unitId);
     }
   }
 

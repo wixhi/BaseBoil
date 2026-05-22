@@ -456,6 +456,7 @@ export class Building extends Entity {
         if (enemy) {
           this.attackTimer = 1 / this.attackSpeed;
           const n = norm(enemy.x - this.x, enemy.y - this.y);
+          const bleacherProj = Math.random() < 0.5 ? 'hotdog' : 'beercan';
           game.addProjectile({
             x: this.x,
             y: this.y,
@@ -465,6 +466,7 @@ export class Building extends Entity {
             team: this.team,
             targetId: enemy.id,
             speed: 280,
+            projType: bleacherProj,
             trail: []
           });
         }
@@ -511,6 +513,7 @@ export class Projectile {
     this.team = data.team;
     this.targetId = data.targetId;
     this.speed = data.speed;
+    this.projType = data.projType || 'baseball';
     this.trail = [];
     this.alive = true;
   }
