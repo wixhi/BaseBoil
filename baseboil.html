@@ -29,8 +29,9 @@ const TILE = 32, MAP_COLS = 64, MAP_ROWS = 48;
 const TILE_TYPE = { GRASS:0, DIRT:1, OBSTACLE:2, RESOURCE:3 };
 const TEAM = { PLAYER:0, ENEMY:1 };
 const STATE = { IDLE:'IDLE', MOVING:'MOVING', ATTACKING:'ATTACKING', HARVESTING:'HARVESTING', RETURNING:'RETURNING', BUILDING:'BUILDING', DEAD:'DEAD' };
+const RESEARCH = { HIGH_PROTEIN:'HIGH_PROTEIN', WHEY_PROTEIN:'WHEY_PROTEIN', CREATINE:'CREATINE', STEROIDS:'STEROIDS' };
 const UNIT = { GROUNDSKEEPER:'GROUNDSKEEPER', BATTER:'BATTER', PITCHER:'PITCHER', CATCHER:'CATCHER', SLUGGER:'SLUGGER' };
-const BLDG = { DUGOUT:'DUGOUT', BATTING_CAGE:'BATTING_CAGE', BULLPEN:'BULLPEN', BLEACHERS:'BLEACHERS' };
+const BLDG = { DUGOUT:'DUGOUT', BATTING_CAGE:'BATTING_CAGE', BULLPEN:'BULLPEN', BLEACHERS:'BLEACHERS', RESEARCH_LAB:'RESEARCH_LAB', BEEF_FARM:'BEEF_FARM' };
 const COLORS = {
   HUD_BG:'#111827', HUD_BORDER:'#1f2937', BUTTON_BG:'#1f2937', BUTTON_HOVER:'#374151',
   BUTTON_DISABLED:'#111827', BUTTON_BORDER:'#374151',
@@ -63,7 +64,15 @@ const BLDG_DEF = {
   [BLDG.DUGOUT]:       { name:'Dugout',       label:'DUG', hp:1000, isMain:true,  cost:0,   buildTime:0,  tileW:3, tileH:3, trainable:[UNIT.GROUNDSKEEPER], isAttacker:false, attackDamage:0,  attackRange:0,   attackSpeed:0,   isRanged:false },
   [BLDG.BATTING_CAGE]: { name:'Batting Cage', label:'BC',  hp:450,  isMain:false, cost:150, buildTime:20, tileW:2, tileH:2, trainable:[UNIT.BATTER, UNIT.CATCHER], isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false },
   [BLDG.BULLPEN]:      { name:'Bullpen',      label:'BP',  hp:450,  isMain:false, cost:175, buildTime:20, tileW:2, tileH:2, trainable:[UNIT.PITCHER, UNIT.SLUGGER], isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false },
-  [BLDG.BLEACHERS]:    { name:'Bleachers',    label:'BL',  hp:350,  isMain:false, cost:125, buildTime:15, tileW:2, tileH:2, trainable:[], isAttacker:true, attackDamage:15, attackRange:220, attackSpeed:0.6, isRanged:true }
+  [BLDG.BLEACHERS]:    { name:'Bleachers',    label:'BL',  hp:350,  isMain:false, cost:125, buildTime:15, tileW:2, tileH:2, trainable:[], isAttacker:true, attackDamage:15, attackRange:220, attackSpeed:0.6, isRanged:true, popBonus:5 },
+  [BLDG.RESEARCH_LAB]: { name:'Research Lab', label:'LAB', hp:400,  isMain:false, cost:200, buildTime:25, tileW:2, tileH:2, trainable:[], isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false },
+  [BLDG.BEEF_FARM]:    { name:'Beef Farm',    label:'BF',  hp:350,  isMain:false, cost:175, buildTime:20, tileW:2, tileH:2, trainable:[], isAttacker:false, attackDamage:0, attackRange:0, attackSpeed:0, isRanged:false }
+};
+const RESEARCH_DEF = {
+  [RESEARCH.HIGH_PROTEIN]: { name:'High Protein Diet', icon:'🥩', desc:'+25 HP all units', cost:100, hp:25, damage:0, attackSpeed:0 },
+  [RESEARCH.WHEY_PROTEIN]: { name:'Whey Protein',      icon:'🥛', desc:'+8 dmg all units', cost:125, hp:0, damage:8, attackSpeed:0 },
+  [RESEARCH.CREATINE]:     { name:'Creatine',           icon:'💊', desc:'+25% atk speed',  cost:150, hp:0, damage:0, attackSpeed:0.25 },
+  [RESEARCH.STEROIDS]:     { name:'Steroids',           icon:'💉', desc:'+30HP +12dmg',    cost:300, hp:30, damage:12, attackSpeed:0 }
 };
 
 // ─── utils.js ────────────────────────────────────────────────────────────────
@@ -143,11 +152,12 @@ class Unit extends Entity {
     this.isRanged=def.isRanged;this.projectileSpeed=def.projectileSpeed||0;this.radius=def.radius;
     this.state=STATE.IDLE;this.target=null;this.movePath=[];this.moveTarget=null;
     this.attackTimer=0;this.carryAmt=0;this.harvestTimer=0;this.harvestTarget=null;
-    this.depositTarget=null;this.attackMoveTarget=null;this.idleTimer=0;
+    this.depositTarget=null;this.attackMoveTarget=null;this.idleTimer=0;this.strikeAnim=0;
   }
   update(dt,game){
     if(!this.alive)return;
     this.attackTimer=Math.max(0,this.attackTimer-dt);
+    if(this.strikeAnim>0)this.strikeAnim=Math.max(0,this.strikeAnim-dt);
     switch(this.state){
       case STATE.IDLE:      this._updateIdle(dt,game);break;
       case STATE.MOVING:    this._updateMoving(dt,game);break;
@@ -178,6 +188,7 @@ class Unit extends Entity {
     if(d>this.range+r+16){this._pathTo(this.target.x,this.target.y,game);this.state=STATE.MOVING;return;}
     if(this.attackTimer<=0){
       this.attackTimer=1/this.attackSpeed;
+      if(this.type===UNIT.SLUGGER)this.strikeAnim=0.45;
       if(this.isRanged){const n=norm(this.target.x-this.x,this.target.y-this.y);game.addProjectile({x:this.x,y:this.y,vx:n.x*this.projectileSpeed,vy:n.y*this.projectileSpeed,damage:this.damage,team:this.team,targetId:this.target.id,speed:this.projectileSpeed,projType:'baseball',trail:[]});}
       else this.target.takeDamage(this.damage,game);
     }
@@ -223,18 +234,20 @@ class Building extends Entity {
     this.isAttacker=def.isAttacker;this.attackDamage=def.attackDamage||0;
     this.attackRange=def.attackRange||0;this.attackSpeed=def.attackSpeed||0;this.isRanged=def.isRanged||false;this.attackTimer=0;
     this.radius=Math.min(def.tileW,def.tileH)*TILE/2;
+    this.beefStocked=0;this.beefTimer=0;this.beefMax=5;
   }
   update(dt,game){
     if(!this.alive)return;
     if(!this.complete){this.constructProgress=Math.min(1,this.constructProgress+dt/this.buildTime);this.hp=Math.max(1,Math.floor(this.constructProgress*this.maxHp));if(this.constructProgress>=1){this.complete=true;this.hp=this.maxHp;}return;}
     if(this.productionQueue.length>0){const def=UNIT_DEF[this.productionQueue[0]];this.trainTimer+=dt;if(this.trainTimer>=def.trainTime){this.trainTimer=0;const ut=this.productionQueue.shift();const ex=this.x+(Math.random()-0.5)*TILE,ey=(this.tileY+this.tileH)*TILE+TILE/2;game.spawnUnit(ut,this.team,ex,ey);}}
     if(this.isAttacker){this.attackTimer=Math.max(0,this.attackTimer-dt);if(this.attackTimer<=0){const enemy=game.getNearestEnemy(this,this.attackRange);if(enemy){this.attackTimer=1/this.attackSpeed;const n=norm(enemy.x-this.x,enemy.y-this.y);const pt=Math.random()<0.5?'hotdog':'beercan';game.addProjectile({x:this.x,y:this.y,vx:n.x*280,vy:n.y*280,damage:this.attackDamage,team:this.team,targetId:enemy.id,speed:280,projType:pt,trail:[]});}}}
+    if(this.type===BLDG.BEEF_FARM){this.beefTimer+=dt;if(this.beefTimer>=20&&this.beefStocked<this.beefMax){this.beefTimer=0;this.beefStocked++;}}
   }
   queueTrain(unitType,game){
     const def=UNIT_DEF[unitType];const bDef=BLDG_DEF[this.type];
     if(!bDef.trainable.includes(unitType)||!this.complete)return false;
     const tu=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===this.team).length;
-    if(tu>=POP_CAP)return false;
+    if(tu>=game.getPopCap(this.team))return false;
     const cost=def.cost;
     if(this.team===TEAM.PLAYER){if(!game.player.canAfford(cost))return false;game.player.spend(cost);}
     else{if(game.ai.baseballs<cost)return false;game.ai.baseballs-=cost;}
@@ -259,7 +272,7 @@ class Projectile {
 
 // ─── player.js ───────────────────────────────────────────────────────────────
 class Player {
-  constructor(){this.baseballs=START_BASEBALLS;this.selectedIds=new Set();this.buildMode=null;this.ghostTile=null;this.ghostValid=false;}
+  constructor(){this.baseballs=START_BASEBALLS;this.selectedIds=new Set();this.buildMode=null;this.ghostTile=null;this.ghostValid=false;this.hpBonus=0;this.damageBonus=0;this.attackSpeedBonus=0;this.researchDone=new Set();}
   select(e){this.selectedIds.clear();if(e)this.selectedIds.add(e.id);}
   addToSelection(e){if(e)this.selectedIds.add(e.id);}
   clearSelection(){this.selectedIds.clear();}
@@ -268,6 +281,15 @@ class Player {
   earn(amount){this.baseballs+=amount;}
   setBuildMode(type){this.buildMode=type;this.ghostTile=null;this.ghostValid=false;}
   cancelBuildMode(){this.buildMode=null;this.ghostTile=null;this.ghostValid=false;}
+  applyResearch(type,game){
+    if(this.researchDone.has(type))return false;
+    const rDef=RESEARCH_DEF[type];if(!this.canAfford(rDef.cost))return false;
+    this.spend(rDef.cost);this.researchDone.add(type);
+    if(rDef.hp){this.hpBonus+=rDef.hp;for(const e of game.entities)if(e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER){e.maxHp+=rDef.hp;e.hp=Math.min(e.hp+rDef.hp,e.maxHp);}}
+    if(rDef.damage){this.damageBonus+=rDef.damage;for(const e of game.entities)if(e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER)e.damage+=rDef.damage;}
+    if(rDef.attackSpeed){this.attackSpeedBonus+=rDef.attackSpeed;for(const e of game.entities)if(e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER)e.attackSpeed=Math.min(e.attackSpeed*(1+rDef.attackSpeed),3.0);}
+    return true;
+  }
 }
 
 // ─── input.js ────────────────────────────────────────────────────────────────
@@ -380,6 +402,10 @@ class Renderer {
       drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4);ctx.stroke();ctx.setLineDash([]);
     } else if(bldg.type===BLDG.DUGOUT){
       this._drawDugout(ctx,bldg,isPlayer,x,y,w,h);
+    } else if(bldg.type===BLDG.RESEARCH_LAB){
+      this._drawResearchLab(ctx,bldg,isPlayer,x,y,w,h);
+    } else if(bldg.type===BLDG.BEEF_FARM){
+      this._drawBeefFarm(ctx,bldg,isPlayer,x,y,w,h);
     } else {
       const fill=isPlayer?COLORS.PLAYER_BLDG_FILL:COLORS.ENEMY_BLDG_FILL;
       ctx.shadowColor=stroke;ctx.shadowBlur=8;ctx.fillStyle=fill;drawRoundedRect(ctx,x+2,y+2,w-4,h-4,4);ctx.fill();ctx.shadowBlur=0;
@@ -421,6 +447,51 @@ class Renderer {
     ctx.fillStyle=COLORS.WHITE;ctx.font=`bold ${Math.floor(w*0.13)}px "Courier New"`;
     ctx.textAlign='center';ctx.textBaseline='middle';
     ctx.fillText(isPlayer?'HOME':'AWAY',x+w/2,y+h*0.15);
+  }
+  _drawResearchLab(ctx,bldg,isPlayer,x,y,w,h){
+    const stroke=isPlayer?COLORS.PLAYER_BLDG_STROKE:COLORS.ENEMY_BLDG_STROKE;
+    const wallColor=isPlayer?'#0a1a14':'#14080a';
+    const glowColor=isPlayer?'#00e5ff':'#ff4400';
+    ctx.shadowColor=stroke;ctx.shadowBlur=8;ctx.fillStyle=wallColor;drawRoundedRect(ctx,x+1,y+1,w-2,h-2,3);ctx.fill();ctx.shadowBlur=0;
+    ctx.fillStyle=isPlayer?'#051a10':'#1a0505';ctx.fillRect(x+3,y+3,w-6,h*0.35);
+    // Glowing vials on shelf
+    const vialX=[x+w*0.2,x+w*0.42,x+w*0.65,x+w*0.85];
+    const vialColors=['#00e5ff','#76ff03','#ff6d00','#7c4dff'];
+    for(let i=0;i<4;i++){
+      const vx=vialX[i],vy=y+h*0.38,vc=vialColors[i];
+      ctx.shadowColor=vc;ctx.shadowBlur=6;
+      ctx.fillStyle='rgba(255,255,255,0.15)';ctx.fillRect(vx-3,vy,6,h*0.32);
+      ctx.fillStyle=vc;ctx.globalAlpha=0.7;ctx.fillRect(vx-3,vy+h*0.18,6,h*0.14);ctx.globalAlpha=1;
+      ctx.shadowBlur=0;
+      ctx.strokeStyle=vc;ctx.lineWidth=1;ctx.strokeRect(vx-3,vy,6,h*0.32);
+    }
+    // Shelf line
+    ctx.fillStyle='#5d4037';ctx.fillRect(x+4,y+h*0.37,w-8,3);
+    ctx.strokeStyle=stroke;ctx.lineWidth=2;drawRoundedRect(ctx,x+1,y+1,w-2,h-2,3);ctx.stroke();
+    ctx.fillStyle=COLORS.WHITE;ctx.font=`bold ${Math.floor(w*0.13)}px "Courier New"`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('LAB',x+w/2,y+h*0.82);
+  }
+  _drawBeefFarm(ctx,bldg,isPlayer,x,y,w,h){
+    const stroke=isPlayer?COLORS.PLAYER_BLDG_STROKE:COLORS.ENEMY_BLDG_STROKE;
+    ctx.shadowColor=stroke;ctx.shadowBlur=8;ctx.fillStyle='#1a1f0a';drawRoundedRect(ctx,x+1,y+1,w-2,h-2,3);ctx.fill();ctx.shadowBlur=0;
+    // Grass field floor
+    ctx.fillStyle='#2d5a1b';ctx.fillRect(x+3,y+h*0.45,w-6,h*0.42);
+    // Fence posts
+    ctx.fillStyle='#8d6e63';
+    for(let i=0;i<5;i++){ctx.fillRect(x+4+i*(w-8)/4-1,y+h*0.43,3,h*0.14);}
+    ctx.fillRect(x+4,y+h*0.48,w-8,3);
+    // Simple cow silhouette
+    const cx2=x+w*0.5,cy2=y+h*0.65;
+    ctx.fillStyle='#f5f5f5';ctx.beginPath();ctx.ellipse(cx2,cy2,w*0.22,h*0.14,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#f5f5f5';ctx.beginPath();ctx.ellipse(cx2+w*0.18,cy2-h*0.08,w*0.1,h*0.09,0.3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff8a65';ctx.beginPath();ctx.ellipse(cx2+w*0.27,cy2-h*0.1,w*0.04,h*0.05,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#5d4037';
+    for(const lx of[cx2-w*0.15,cx2-w*0.05,cx2+w*0.07,cx2+w*0.15]){ctx.fillRect(lx-2,cy2+h*0.1,4,h*0.12);}
+    // Beef stock dots
+    for(let i=0;i<5;i++){ctx.fillStyle=i<bldg.beefStocked?'#f59e0b':'#374151';ctx.beginPath();ctx.arc(x+w*0.1+i*(w*0.8/4),y+h*0.92,4,0,Math.PI*2);ctx.fill();}
+    ctx.strokeStyle=stroke;ctx.lineWidth=2;drawRoundedRect(ctx,x+1,y+1,w-2,h-2,3);ctx.stroke();
+    ctx.fillStyle=COLORS.WHITE;ctx.font=`bold ${Math.floor(w*0.13)}px "Courier New"`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('FARM',x+w/2,y+h*0.2);
   }
   _drawBuildingSteam(ctx,bldg,t){
     const x=bldg.tileX*TILE,y=bldg.tileY*TILE,w=bldg.tileW*TILE;
@@ -507,8 +578,28 @@ class Renderer {
   _drawSlugger(ctx,unit){
     const{x,y,radius:r}=unit,ip=unit.team===TEAM.PLAYER;
     const bc=ip?COLORS.PLAYER_BODY:COLORS.ENEMY_BODY,hc=ip?'#37474f':'#4e342e',ht=ip?'#78909c':'#a1887f',st=ip?COLORS.PLAYER_STROKE:COLORS.ENEMY_STROKE;
-    ctx.strokeStyle='#3e1f00';ctx.lineWidth=5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x+r*0.5,y+r*0.65);ctx.lineTo(x+r*1.55,y-r*0.6);ctx.stroke();
-    ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(x+r*1.0,y+r*0.0);ctx.lineTo(x+r*1.55,y-r*0.6);ctx.stroke();ctx.lineCap='butt';
+    const sa=unit.strikeAnim||0,prog=sa>0?1-sa/0.45:0;
+    // Strike sweep arc
+    if(sa>0){
+      ctx.save();
+      const arcAlpha=(1-prog)*0.9;
+      ctx.strokeStyle=`rgba(255,220,50,${arcAlpha})`;ctx.lineWidth=r*0.7;ctx.lineCap='round';
+      ctx.beginPath();ctx.arc(x,y,r*1.7,-Math.PI*0.85+prog*Math.PI*0.7,-Math.PI*0.85+prog*Math.PI*0.7+Math.PI*0.35);ctx.stroke();
+      ctx.lineCap='butt';ctx.restore();
+    }
+    // Bat position changes during strike
+    if(sa>0){
+      const batAngle=-Math.PI*0.85+prog*Math.PI*1.1;
+      const bx1=x+Math.cos(batAngle)*r*0.4,by1=y+Math.sin(batAngle)*r*0.4;
+      const bx2=x+Math.cos(batAngle)*r*1.8,by2=y+Math.sin(batAngle)*r*1.8;
+      ctx.strokeStyle='#3e1f00';ctx.lineWidth=5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(bx1,by1);ctx.lineTo(bx2,by2);ctx.stroke();
+      ctx.lineWidth=7;const bx3=x+Math.cos(batAngle)*r*1.4,by3=y+Math.sin(batAngle)*r*1.4;ctx.beginPath();ctx.moveTo(bx3,by3);ctx.lineTo(bx2,by2);ctx.stroke();ctx.lineCap='butt';
+      // Impact flash at strike tip
+      if(prog>0.7){const fl=(prog-0.7)/0.3;ctx.shadowColor='#ffeb3b';ctx.shadowBlur=18;ctx.fillStyle=`rgba(255,235,59,${fl*0.9})`;ctx.beginPath();ctx.arc(bx2,by2,r*0.55,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;}
+    } else {
+      ctx.strokeStyle='#3e1f00';ctx.lineWidth=5;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(x+r*0.5,y+r*0.65);ctx.lineTo(x+r*1.55,y-r*0.6);ctx.stroke();
+      ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(x+r*1.0,y+r*0.0);ctx.lineTo(x+r*1.55,y-r*0.6);ctx.stroke();ctx.lineCap='butt';
+    }
     ctx.shadowColor=st;ctx.shadowBlur=6;ctx.fillStyle=bc;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();ctx.shadowBlur=0;
     ctx.strokeStyle=st;ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.stroke();
     ctx.fillStyle=hc;ctx.beginPath();ctx.arc(x,y-r*0.18,r*0.82,Math.PI,0);ctx.fill();ctx.fillRect(x-r*0.82,y-r*0.18,r*1.64,r*0.62);
@@ -586,11 +677,19 @@ class UI {
     if(selected.length===0)return btns;
     if(selected.length===1&&selected[0] instanceof Building&&selected[0].team===TEAM.PLAYER){
       const bldg=selected[0],bDef=BLDG_DEF[bldg.type];
-      for(const ut of bDef.trainable){const uDef=UNIT_DEF[ut],pop=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER).length,ac=pop>=POP_CAP,ca=game.player.canAfford(uDef.cost);btns.push({label:uDef.label,name:uDef.name,cost:uDef.cost,icon:_unitIcon(ut),enabled:ca&&!ac&&bldg.complete,tip:ac?'Pop cap!':!bldg.complete?'Constructing':!ca?'Need ⚾':'',action:{type:'train',unitType:ut,buildingId:bldg.id}});}
+      const popCap=game.getPopCap(TEAM.PLAYER);
+      for(const ut of bDef.trainable){const uDef=UNIT_DEF[ut],pop=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER).length,ac=pop>=popCap,ca=game.player.canAfford(uDef.cost);btns.push({label:uDef.label,name:uDef.name,cost:uDef.cost,icon:_unitIcon(ut),enabled:ca&&!ac&&bldg.complete,tip:ac?'Pop cap!':!bldg.complete?'Constructing':!ca?'Need ⚾':'',action:{type:'train',unitType:ut,buildingId:bldg.id}});}
+      if(bldg.type===BLDG.RESEARCH_LAB&&bldg.complete){for(const rt of Object.values(RESEARCH)){const rDef=RESEARCH_DEF[rt],done=game.player.researchDone.has(rt),ca=game.player.canAfford(rDef.cost);btns.push({label:done?'DONE':rDef.name.split(' ')[0].toUpperCase().substring(0,4),name:rDef.name,cost:done?0:rDef.cost,icon:rDef.icon,enabled:!done&&ca,tip:done?'Researched':!ca?'Need ⚾':rDef.desc,action:{type:'research',researchType:rt}});}}
+      if(bldg.type===BLDG.BEEF_FARM&&bldg.complete){const prog=Math.floor((bldg.beefTimer/20)*100);btns.push({label:'BEEF',name:`Beef x${bldg.beefStocked}`,cost:0,icon:'🐄',enabled:false,tip:`${bldg.beefStocked}/${bldg.beefMax} beef stocked | Next in ${Math.ceil(20-bldg.beefTimer)}s`,action:{type:'none'}});}
     }
     const hasGK=selected.some(e=>e instanceof Unit&&e.type===UNIT.GROUNDSKEEPER&&e.team===TEAM.PLAYER);
-    if(hasGK){for(const bt of[BLDG.BATTING_CAGE,BLDG.BULLPEN,BLDG.BLEACHERS]){const bDef=BLDG_DEF[bt],ca=game.player.canAfford(bDef.cost);btns.push({label:bDef.label,name:bDef.name,cost:bDef.cost,icon:_bldgIcon(bt),enabled:ca,tip:ca?`Build ${bDef.name}`:'Need ⚾',action:{type:'build',bldgType:bt}});}}
-    if(selected.length===1&&selected[0] instanceof Unit&&selected[0].team===TEAM.PLAYER){btns.push({label:'RET',name:'Retire',cost:0,icon:'👋',enabled:true,tip:'Remove unit, free pop slot',action:{type:'retire',unitId:selected[0].id}});}
+    if(hasGK){for(const bt of[BLDG.BATTING_CAGE,BLDG.BULLPEN,BLDG.BLEACHERS,BLDG.RESEARCH_LAB,BLDG.BEEF_FARM]){const bDef=BLDG_DEF[bt],ca=game.player.canAfford(bDef.cost);btns.push({label:bDef.label,name:bDef.name,cost:bDef.cost,icon:_bldgIcon(bt),enabled:ca,tip:ca?`Build ${bDef.name}`:'Need ⚾',action:{type:'build',bldgType:bt}});}}
+    if(selected.length===1&&selected[0] instanceof Unit&&selected[0].team===TEAM.PLAYER){
+      const u=selected[0];
+      btns.push({label:'RET',name:'Retire',cost:0,icon:'👋',enabled:true,tip:'Remove unit, free pop slot',action:{type:'retire',unitId:u.id}});
+      const farm=game.entities.find(e=>e.alive&&e instanceof Building&&e.team===TEAM.PLAYER&&e.type===BLDG.BEEF_FARM&&e.complete&&e.beefStocked>0);
+      if(farm){btns.push({label:'EAT',name:'Eat Beef',cost:0,icon:'🥩',enabled:u.hp<u.maxHp,tip:u.hp>=u.maxHp?'Full HP':`+40 HP (${farm.beefStocked} left)`,action:{type:'eat_beef',unitId:u.id}});}
+    }
     return btns;
   }
   handleClick(cx,cy,game){if(cy<HUD_Y)return false;for(const btn of this.buttons){if(pointInRect(cx,cy,btn.x,btn.y,btn.w,btn.h)){if(btn.enabled)this._executeAction(btn.action,game);return true;}}return false;}
@@ -598,6 +697,8 @@ class UI {
     if(action.type==='train'){const b=game.entities.find(e=>e.id===action.buildingId);if(b)b.queueTrain(action.unitType,game);}
     else if(action.type==='build'){game.player.setBuildMode(action.bldgType);document.getElementById('gameCanvas').classList.add('crosshair');}
     else if(action.type==='retire'){game.retireUnit(action.unitId);}
+    else if(action.type==='research'){game.player.applyResearch(action.researchType,game);}
+    else if(action.type==='eat_beef'){const u=game.entities.find(e=>e.id===action.unitId&&e.alive);const farm=game.entities.find(e=>e.alive&&e instanceof Building&&e.team===TEAM.PLAYER&&e.type===BLDG.BEEF_FARM&&e.complete&&e.beefStocked>0);if(u&&farm&&u.hp<u.maxHp){farm.beefStocked--;u.hp=Math.min(u.hp+40,u.maxHp);}}
   }
   updateHover(cx,cy){this.hoveredButtonIdx=-1;if(cy<HUD_Y)return;for(let i=0;i<this.buttons.length;i++){if(pointInRect(cx,cy,this.buttons[i].x,this.buttons[i].y,this.buttons[i].w,this.buttons[i].h)){this.hoveredButtonIdx=i;break;}}}
   draw(ctx,game){
@@ -657,7 +758,8 @@ class UI {
     const px=908,py=HUD_Y+8;ctx.textAlign='left';ctx.textBaseline='top';
     ctx.shadowColor=COLORS.GOLD;ctx.shadowBlur=6;ctx.fillStyle=COLORS.GOLD;ctx.font='bold 16px "Courier New"';ctx.fillText(`⚾ ${game.player.baseballs}`,px,py);ctx.shadowBlur=0;
     const uc=game.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===TEAM.PLAYER).length;
-    ctx.fillStyle=uc>=POP_CAP?COLORS.RED:COLORS.WHITE;ctx.font='13px "Courier New"';ctx.fillText(`👥 ${uc} / ${POP_CAP}`,px,py+22);
+    const pc=game.getPopCap(TEAM.PLAYER);
+    ctx.fillStyle=uc>=pc?COLORS.RED:COLORS.WHITE;ctx.font='13px "Courier New"';ctx.fillText(`👥 ${uc} / ${pc}`,px,py+22);
     const inn=Math.min(MAX_INNINGS,Math.floor(game.inningTimer/INNING_DURATION)+1);
     ctx.fillStyle=COLORS.ORANGE;ctx.font='bold 13px "Courier New"';ctx.fillText(`INNING ${inn} / ${MAX_INNINGS}`,px,py+42);
     const sl=Math.ceil(INNING_DURATION-(game.inningTimer%INNING_DURATION));
@@ -669,7 +771,7 @@ class UI {
   }
 }
 function _unitIcon(type){return{GROUNDSKEEPER:'🔧',BATTER:'🏏',PITCHER:'⚾',CATCHER:'🛡',SLUGGER:'💥'}[type]||'?';}
-function _bldgIcon(type){return{BATTING_CAGE:'🏟',BULLPEN:'⚡',BLEACHERS:'🗼'}[type]||'?';}
+function _bldgIcon(type){return{BATTING_CAGE:'🏟',BULLPEN:'⚡',BLEACHERS:'🗼',RESEARCH_LAB:'🔬',BEEF_FARM:'🐄'}[type]||'?';}
 
 // ─── game.js ─────────────────────────────────────────────────────────────────
 class Game {
@@ -698,10 +800,13 @@ class Game {
     this.inningTimer=0;this.gameState='playing';
   }
   restart(){this.init();}
+  getPopCap(team){const bl=this.entities.filter(e=>e.alive&&e instanceof Building&&e.team===team&&e.type===BLDG.BLEACHERS&&e.complete).length;return POP_CAP+bl*5;}
   spawnUnit(type,team,x,y){
-    if(this.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===team).length>=POP_CAP)return null;
+    if(this.entities.filter(e=>e.alive&&e instanceof Unit&&e.team===team).length>=this.getPopCap(team))return null;
     x=clamp(x,TILE,MAP_COLS*TILE-TILE);y=clamp(y,TILE,MAP_ROWS*TILE-TILE);
-    const u=new Unit(type,team,x,y);this.entities.push(u);return u;
+    const u=new Unit(type,team,x,y);
+    if(team===TEAM.PLAYER){if(this.player.hpBonus>0){u.maxHp+=this.player.hpBonus;u.hp=u.maxHp;}if(this.player.damageBonus>0)u.damage+=this.player.damageBonus;if(this.player.attackSpeedBonus>0)u.attackSpeed=Math.min(u.attackSpeed*(1+this.player.attackSpeedBonus),3.0);}
+    this.entities.push(u);return u;
   }
   spawnBuilding(type,team,tx,ty){
     const def=BLDG_DEF[type],b=new Building(type,team,tx,ty);this.entities.push(b);
